@@ -11,15 +11,15 @@ export function useStockItems() {
   const { user } = useAuth();
 
   useEffect(() => {
-    if (!user?.company) {
+    if (!user) {
       setLoading(false);
       return;
     }
 
-    const q = query(
-      collection(db, "stock-items"),
-      where("company", "==", user.company)
-    );
+    // Query with or without company filter
+    const q = user.company 
+      ? query(collection(db, "stock-items"), where("company", "==", user.company))
+      : query(collection(db, "stock-items"));
 
     const unsubscribe = onSnapshot(
       q,
@@ -42,14 +42,13 @@ export function useStockItems() {
         setLoading(false);
       },
       (err) => {
-        console.error("Error fetching stock items:", err);
         setError(err as Error);
         setLoading(false);
       }
     );
 
     return () => unsubscribe();
-  }, [user?.company]);
+  }, [user, user?.company]);
 
   return { items, loading, error };
 }
@@ -61,16 +60,15 @@ export function useTransactions(limit: number = 50) {
   const { user } = useAuth();
 
   useEffect(() => {
-    if (!user?.company) {
+    if (!user) {
       setLoading(false);
       return;
     }
 
-    const q = query(
-      collection(db, "transactions"),
-      where("company", "==", user.company),
-      orderBy("timestamp", "desc")
-    );
+    // Query without orderBy to avoid index requirement initially
+    const q = user.company
+      ? query(collection(db, "transactions"), where("company", "==", user.company))
+      : query(collection(db, "transactions"));
 
     const unsubscribe = onSnapshot(
       q,
@@ -88,18 +86,19 @@ export function useTransactions(limit: number = 50) {
             user: data.user || { id: "", name: "Unknown" }
           };
         });
+        // Sort by timestamp in memory
+        transactionsData.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
         setTransactions(transactionsData.slice(0, limit));
         setLoading(false);
       },
       (err) => {
-        console.error("Error fetching transactions:", err);
         setError(err as Error);
         setLoading(false);
       }
     );
 
     return () => unsubscribe();
-  }, [user?.company, limit]);
+  }, [user, user?.company, limit]);
 
   return { transactions, loading, error };
 }

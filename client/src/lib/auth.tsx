@@ -59,7 +59,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             });
           }
         } catch (error) {
-          console.error("Error fetching user data:", error);
+
           setUser({
             uid: firebaseUser.uid,
             email: firebaseUser.email || "",
@@ -86,7 +86,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
       setLocation("/");
     } catch (error: any) {
-      console.error("Sign in error:", error);
       toast({
         variant: "destructive",
         title: "Error",
@@ -108,7 +107,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
       setLocation("/login");
     } catch (error: any) {
-      console.error("Sign out error:", error);
       toast({
         variant: "destructive",
         title: "Error",
