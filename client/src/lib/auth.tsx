@@ -32,6 +32,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [, setLocation] = useLocation();
   const { toast } = useToast();
+  const [shouldRedirectToHome, setShouldRedirectToHome] = useState(false);
 
   useEffect(() => {
     // Listen to Firebase auth state changes
@@ -59,7 +60,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             });
           }
         } catch (error) {
-
           setUser({
             uid: firebaseUser.uid,
             email: firebaseUser.email || "",
@@ -76,23 +76,45 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => unsubscribe();
   }, []);
 
+  // Handle redirect after successful login
+  useEffect(() => {
+    if (shouldRedirectToHome && user && !loading) {
+      setLocation("/");
+      setShouldRedirectToHome(false);
+    }
+  }, [user, loading, shouldRedirectToHome, setLocation]);
+
   const signIn = async (email: string, password: string) => {
     try {
       setLoading(true);
       await signInWithEmailAndPassword(auth, email, password);
+      // Set flag to redirect after auth state updates
+      setShouldRedirectToHome(true);
       toast({
         title: "Success",
         description: "Successfully signed in",
       });
-      setLocation("/");
     } catch (error: any) {
+      // Parse Firebase error codes to user-friendly messages
+      let errorMessage = "Failed to sign in. Please try again.";
+      
+      if (error.code === "auth/invalid-credential" || error.code === "auth/wrong-password") {
+        errorMessage = "Invalid email or password. Please check your credentials.";
+      } else if (error.code === "auth/user-not-found") {
+        errorMessage = "No account found with this email address.";
+      } else if (error.code === "auth/invalid-email") {
+        errorMessage = "Please enter a valid email address.";
+      } else if (error.code === "auth/too-many-requests") {
+        errorMessage = "Too many failed attempts. Please try again later.";
+      } else if (error.code === "auth/network-request-failed") {
+        errorMessage = "Network error. Please check your connection.";
+      }
+
       toast({
         variant: "destructive",
-        title: "Error",
-        description: error.message || "Failed to sign in. Please check your credentials.",
+        title: "Login Failed",
+        description: errorMessage,
       });
-      throw error;
-    } finally {
       setLoading(false);
     }
   };
