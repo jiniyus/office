@@ -1,11 +1,21 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
 import { useLocation } from "wouter";
+import { 
+  signInWithEmailAndPassword, 
+  signOut as firebaseSignOut,
+  onAuthStateChanged,
+  User as FirebaseUser
+} from "firebase/auth";
+import { doc, getDoc } from "firebase/firestore";
+import { auth, db } from "./firebase";
+import { useToast } from "@/hooks/use-toast";
 
 interface User {
   uid: string;
   email: string;
   displayName: string;
   photoURL?: string;
+  company?: string;
 }
 
 interface AuthContextType {
@@ -21,44 +31,92 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [, setLocation] = useLocation();
+  const { toast } = useToast();
 
   useEffect(() => {
-    // Simulate checking auth state
-    const timer = setTimeout(() => {
-      const storedUser = localStorage.getItem("stock_user");
-      if (storedUser) {
-        setUser(JSON.parse(storedUser));
+    // Listen to Firebase auth state changes
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser: FirebaseUser | null) => {
+      if (firebaseUser) {
+        // Fetch user data from Firestore
+        try {
+          const userDoc = await getDoc(doc(db, "users", firebaseUser.uid));
+          if (userDoc.exists()) {
+            const userData = userDoc.data();
+            setUser({
+              uid: firebaseUser.uid,
+              email: firebaseUser.email || "",
+              displayName: userData.displayName || firebaseUser.email?.split("@")[0] || "User",
+              photoURL: firebaseUser.photoURL || undefined,
+              company: userData.company
+            });
+          } else {
+            // User exists in auth but not in Firestore
+            setUser({
+              uid: firebaseUser.uid,
+              email: firebaseUser.email || "",
+              displayName: firebaseUser.email?.split("@")[0] || "User",
+              photoURL: firebaseUser.photoURL || undefined
+            });
+          }
+        } catch (error) {
+          console.error("Error fetching user data:", error);
+          setUser({
+            uid: firebaseUser.uid,
+            email: firebaseUser.email || "",
+            displayName: firebaseUser.email?.split("@")[0] || "User",
+            photoURL: firebaseUser.photoURL || undefined
+          });
+        }
+      } else {
+        setUser(null);
       }
       setLoading(false);
-    }, 1000);
-    return () => clearTimeout(timer);
+    });
+
+    return () => unsubscribe();
   }, []);
 
-  const signIn = async (email: string) => {
-    // Simulate API call
-    setLoading(true);
-    await new Promise(resolve => setTimeout(resolve, 800));
-    
-    const mockUser = {
-      uid: "123",
-      email,
-      displayName: "Demo Admin",
-      photoURL: "https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?ixlib=rb-1.2.1&auto=format&fit=facearea&facepad=2&w=256&h=256&q=80"
-    };
-    
-    localStorage.setItem("stock_user", JSON.stringify(mockUser));
-    setUser(mockUser);
-    setLoading(false);
-    setLocation("/");
+  const signIn = async (email: string, password: string) => {
+    try {
+      setLoading(true);
+      await signInWithEmailAndPassword(auth, email, password);
+      toast({
+        title: "Success",
+        description: "Successfully signed in",
+      });
+      setLocation("/");
+    } catch (error: any) {
+      console.error("Sign in error:", error);
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: error.message || "Failed to sign in. Please check your credentials.",
+      });
+      throw error;
+    } finally {
+      setLoading(false);
+    }
   };
 
   const signOut = async () => {
-    setLoading(true);
-    await new Promise(resolve => setTimeout(resolve, 500));
-    localStorage.removeItem("stock_user");
-    setUser(null);
-    setLoading(false);
-    setLocation("/login");
+    try {
+      setLoading(true);
+      await firebaseSignOut(auth);
+      toast({
+        title: "Signed out",
+        description: "Successfully signed out",
+      });
+      setLocation("/login");
+    } catch (error: any) {
+      console.error("Sign out error:", error);
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Failed to sign out",
+      });
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (

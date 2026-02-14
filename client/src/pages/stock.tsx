@@ -12,32 +12,56 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Plus, Search, Filter, ArrowUpDown, MoreHorizontal } from "lucide-react";
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-
-// Mock Data
-const INVENTORY = [
-  { id: "STK-001", name: "MacBook Pro M3", category: "Electronics", quantity: 45, price: 1299.00, status: "In Stock" },
-  { id: "STK-002", name: "Dell XPS 15", category: "Electronics", quantity: 12, price: 999.00, status: "Low Stock" },
-  { id: "STK-003", name: "Logitech MX Master 3", category: "Accessories", quantity: 150, price: 99.00, status: "In Stock" },
-  { id: "STK-004", name: "Keychron K2", category: "Accessories", quantity: 0, price: 89.00, status: "Out of Stock" },
-  { id: "STK-005", name: "Samsung 34\" Monitor", category: "Electronics", quantity: 8, price: 450.00, status: "Low Stock" },
-  { id: "STK-006", name: "Office Chair Ergo", category: "Furniture", quantity: 32, price: 299.00, status: "In Stock" },
-  { id: "STK-007", name: "Standing Desk", category: "Furniture", quantity: 5, price: 550.00, status: "Low Stock" },
-];
+import { useStockItems } from "@/lib/firestore-hooks";
+import { Spinner } from "@/components/ui/spinner";
 
 export default function Stock() {
   const [searchTerm, setSearchTerm] = useState("");
+  const { items, loading } = useStockItems();
 
-  const filteredInventory = INVENTORY.filter(item => 
-    item.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    item.id.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  // Filter items based on search
+  const filteredInventory = useMemo(() => {
+    return items.filter(item => 
+      item.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      item.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      item.category.toLowerCase().includes(searchTerm.toLowerCase())
+    );
+  }, [items, searchTerm]);
+
+  // Calculate stats
+  const stats = useMemo(() => {
+    const totalProducts = items.length;
+    const lowStockItems = items.filter(item => item.quantity > 0 && item.quantity <= 10).length;
+    
+    return {
+      totalProducts,
+      lowStockItems
+    };
+  }, [items]);
+
+  // Get status based on quantity
+  const getStatus = (quantity: number) => {
+    if (quantity === 0) return "Out of Stock";
+    if (quantity <= 10) return "Low Stock";
+    return "In Stock";
+  };
+
+  if (loading) {
+    return (
+      <Layout>
+        <div className="flex items-center justify-center h-64">
+          <Spinner />
+        </div>
+      </Layout>
+    );
+  }
 
   return (
     <Layout>
@@ -65,17 +89,17 @@ export default function Stock() {
               <CardTitle className="text-sm font-medium text-slate-500">Total Products</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">2,345</div>
-              <p className="text-xs text-emerald-600 font-medium">+12% from last month</p>
+              <div className="text-2xl font-bold">{stats.totalProducts}</div>
+              <p className="text-xs text-slate-500">Active inventory items</p>
             </CardContent>
           </Card>
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium text-slate-500">Total Value</CardTitle>
+              <CardTitle className="text-sm font-medium text-slate-500">Total Quantity</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">$534,231</div>
-              <p className="text-xs text-emerald-600 font-medium">+4% from last month</p>
+              <div className="text-2xl font-bold">{items.reduce((sum, item) => sum + item.quantity, 0)}</div>
+              <p className="text-xs text-slate-500">Units in stock</p>
             </CardContent>
           </Card>
           <Card>
@@ -83,7 +107,7 @@ export default function Stock() {
               <CardTitle className="text-sm font-medium text-slate-500">Low Stock Items</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-amber-600">12</div>
+              <div className="text-2xl font-bold text-amber-600">{stats.lowStockItems}</div>
               <p className="text-xs text-slate-500">Requires attention</p>
             </CardContent>
           </Card>
@@ -119,103 +143,109 @@ export default function Stock() {
                         <ArrowUpDown className="ml-2 h-4 w-4" />
                       </Button>
                     </TableHead>
-                    <TableHead className="text-right">Price</TableHead>
+                    <TableHead className="text-right">Size</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead className="w-[50px]"></TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {filteredInventory.map((item) => (
-                    <TableRow key={item.id} className="hover:bg-slate-50 group">
-                      <TableCell className="font-medium text-slate-600">{item.id}</TableCell>
-                      <TableCell className="font-semibold text-slate-900">{item.name}</TableCell>
-                      <TableCell>
-                        <Badge variant="secondary" className="font-normal text-slate-600">
-                          {item.category}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-right font-mono text-slate-600">{item.quantity}</TableCell>
-                      <TableCell className="text-right font-mono font-medium">${item.price.toFixed(2)}</TableCell>
-                      <TableCell>
-                        <Badge 
-                          variant="outline" 
-                          className={`
-                            ${item.status === 'In Stock' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : ''}
-                            ${item.status === 'Low Stock' ? 'bg-amber-50 text-amber-700 border-amber-200' : ''}
-                            ${item.status === 'Out of Stock' ? 'bg-red-50 text-red-700 border-red-200' : ''}
-                          `}
-                        >
-                          {item.status}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" className="h-8 w-8 p-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                              <MoreHorizontal className="h-4 w-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem>Edit details</DropdownMenuItem>
-                            <DropdownMenuItem>Update stock</DropdownMenuItem>
-                            <DropdownMenuItem className="text-red-600">Delete item</DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                  {filteredInventory.map((item) => {
+                    const status = getStatus(item.quantity);
+                    return (
+                      <TableRow key={item.id} className="hover:bg-slate-50 group">
+                        <TableCell className="font-medium text-slate-600">{item.id.slice(0, 12)}</TableCell>
+                        <TableCell className="font-semibold text-slate-900">{item.name}</TableCell>
+                        <TableCell>
+                          <Badge variant="secondary" className="font-normal text-slate-600">
+                            {item.category}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-right font-mono text-slate-600">{item.quantity}</TableCell>
+                        <TableCell className="text-right font-mono font-medium">{item.size || 'N/A'}</TableCell>
+                        <TableCell>
+                          <Badge 
+                            variant="outline" 
+                            className={`
+                              ${status === 'In Stock' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : ''}
+                              ${status === 'Low Stock' ? 'bg-amber-50 text-amber-700 border-amber-200' : ''}
+                              ${status === 'Out of Stock' ? 'bg-red-50 text-red-700 border-red-200' : ''}
+                            `}
+                          >
+                            {status}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button variant="ghost" className="h-8 w-8 p-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <MoreHorizontal className="h-4 w-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem>Edit details</DropdownMenuItem>
+                              <DropdownMenuItem>Update stock</DropdownMenuItem>
+                              <DropdownMenuItem className="text-red-600">Delete item</DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
                 </TableBody>
               </Table>
             </div>
 
             {/* Mobile Card View */}
             <div className="md:hidden divide-y divide-slate-100">
-              {filteredInventory.map((item) => (
-                <div key={item.id} className="p-4 space-y-3">
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <div className="font-semibold text-slate-900">{item.name}</div>
-                      <div className="text-xs text-slate-500 mt-1">{item.id} • {item.category}</div>
+              {filteredInventory.map((item) => {
+                const status = getStatus(item.quantity);
+                return (
+                  <div key={item.id} className="p-4 space-y-3">
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <div className="font-semibold text-slate-900">{item.name}</div>
+                        <div className="text-xs text-slate-500 mt-1">{item.id.slice(0, 12)} • {item.category}</div>
+                      </div>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" className="h-8 w-8 p-0">
+                            <MoreHorizontal className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem>Edit details</DropdownMenuItem>
+                          <DropdownMenuItem>Update stock</DropdownMenuItem>
+                          <DropdownMenuItem className="text-red-600">Delete item</DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                     </div>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" className="h-8 w-8 p-0">
-                          <MoreHorizontal className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem>Edit details</DropdownMenuItem>
-                        <DropdownMenuItem>Update stock</DropdownMenuItem>
-                        <DropdownMenuItem className="text-red-600">Delete item</DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                  
-                  <div className="flex items-center justify-between text-sm">
-                    <div className="flex flex-col">
-                      <span className="text-slate-500 text-xs uppercase tracking-wider font-medium">Quantity</span>
-                      <span className="font-mono text-slate-700">{item.quantity} units</span>
+                    
+                    <div className="flex items-center justify-between text-sm">
+                      <div className="flex flex-col">
+                        <span className="text-slate-500 text-xs uppercase tracking-wider font-medium">Quantity</span>
+                        <span className="font-mono text-slate-700">{item.quantity} units</span>
+                      </div>
+                      <div className="flex flex-col text-right">
+                        <span className="text-slate-500 text-xs uppercase tracking-wider font-medium">Size</span>
+                        <span className="font-mono text-slate-700">{item.size || 'N/A'}</span>
+                      </div>
                     </div>
-                    <div className="flex flex-col text-right">
-                      <span className="text-slate-500 text-xs uppercase tracking-wider font-medium">Price</span>
-                      <span className="font-mono text-slate-700">${item.price.toFixed(2)}</span>
-                    </div>
-                  </div>
 
-                  <div>
-                    <Badge 
-                      variant="outline" 
-                      className={`w-full justify-center py-1
-                        ${item.status === 'In Stock' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : ''}
-                        ${item.status === 'Low Stock' ? 'bg-amber-50 text-amber-700 border-amber-200' : ''}
-                        ${item.status === 'Out of Stock' ? 'bg-red-50 text-red-700 border-red-200' : ''}
-                      `}
-                    >
-                      {item.status}
-                    </Badge>
+                    <div>
+                      <Badge 
+                        variant="outline" 
+                        className={`w-full justify-center py-1
+                          ${status === 'In Stock' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : ''}
+                          ${status === 'Low Stock' ? 'bg-amber-50 text-amber-700 border-amber-200' : ''}
+                          ${status === 'Out of Stock' ? 'bg-red-50 text-red-700 border-red-200' : ''}
+                        `}
+                      >
+                        {status}
+                      </Badge>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </CardContent>
         </Card>
