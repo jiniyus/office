@@ -18,22 +18,59 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
+  DropdownMenuCheckboxItem,
 } from "@/components/ui/dropdown-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
 import { useStockItems } from "@/lib/firestore-hooks";
 import { Spinner } from "@/components/ui/spinner";
+import { useAuth } from "@/lib/auth";
+import { collection, addDoc, Timestamp } from "firebase/firestore";
+import { db } from "@/lib/firebase";
+import { useToast } from "@/hooks/use-toast";
 
 export default function Stock() {
   const [searchTerm, setSearchTerm] = useState("");
+  const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
+  const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
+  const [newProduct, setNewProduct] = useState({
+    name: "",
+    category: "",
+    quantity: "",
+    size: "",
+  });
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  
   const { items, loading } = useStockItems();
+  const { user } = useAuth();
+  const { toast } = useToast();
 
-  // Filter items based on search
+  // Get unique categories
+  const categories = useMemo(() => {
+    const cats = Array.from(new Set(items.map(item => item.category)));
+    return cats.sort();
+  }, [items]);
+
+  // Filter items based on search and category
   const filteredInventory = useMemo(() => {
-    return items.filter(item => 
-      item.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      item.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      item.category.toLowerCase().includes(searchTerm.toLowerCase())
-    );
-  }, [items, searchTerm]);
+    return items.filter(item => {
+      const matchesSearch = item.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        item.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        item.category.toLowerCase().includes(searchTerm.toLowerCase());
+      
+      const matchesCategory = selectedCategories.length === 0 || 
+        selectedCategories.includes(item.category);
+      
+      return matchesSearch && matchesCategory;
+    });
+  }, [items, searchTerm, selectedCategories]);
 
   // Calculate stats
   const stats = useMemo(() => {
@@ -51,6 +88,54 @@ export default function Stock() {
     if (quantity === 0) return "Out of Stock";
     if (quantity <= 10) return "Low Stock";
     return "In Stock";
+  };
+
+  const handleCategoryToggle = (category: string) => {
+    setSelectedCategories(prev =>
+      prev.includes(category)
+        ? prev.filter(c => c !== category)
+        : [...prev, category]
+    );
+  };
+
+  const handleAddProduct = async () => {
+    if (!newProduct.name || !newProduct.category || !newProduct.quantity) {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Please fill in all required fields",
+      });
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      await addDoc(collection(db, "stock-items"), {
+        name: newProduct.name,
+        category: newProduct.category,
+        quantity: parseInt(newProduct.quantity),
+        size: newProduct.size || null,
+        company: user?.company || "",
+        createdAt: Timestamp.now(),
+        createdBy: user?.email || "",
+      });
+
+      toast({
+        title: "Success",
+        description: "Product added successfully",
+      });
+
+      setNewProduct({ name: "", category: "", quantity: "", size: "" });
+      setIsAddDialogOpen(false);
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Failed to add product",
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   if (loading) {
@@ -73,10 +158,39 @@ export default function Stock() {
             <p className="text-slate-500 mt-1">Manage your products and view real-time stock levels.</p>
           </div>
           <div className="flex gap-2">
-            <Button variant="outline" className="h-10">
-              <Filter className="mr-2 h-4 w-4" /> Filter
-            </Button>
-            <Button className="h-10 shadow-lg shadow-primary/20">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" className="h-10">
+                  <Filter className="mr-2 h-4 w-4" /> 
+                  Filter
+                  {selectedCategories.length > 0 && (
+                    <Badge variant="secondary" className="ml-2 h-5 px-1">
+                      {selectedCategories.length}
+                    </Badge>
+                  )}
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-48">
+                {categories.map((category) => (
+                  <DropdownMenuCheckboxItem
+                    key={category}
+                    checked={selectedCategories.includes(category)}
+                    onCheckedChange={() => handleCategoryToggle(category)}
+                  >
+                    {category}
+                  </DropdownMenuCheckboxItem>
+                ))}
+                {categories.length === 0 && (
+                  <div className="px-2 py-1.5 text-sm text-slate-500">
+                    No categories yet
+                  </div>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <Button 
+              className="h-10 shadow-lg shadow-primary/20"
+              onClick={() => setIsAddDialogOpen(true)}
+            >
               <Plus className="mr-2 h-4 w-4" /> Add Product
             </Button>
           </div>
@@ -250,6 +364,71 @@ export default function Stock() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Add Product Dialog */}
+      <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
+        <DialogContent className="sm:max-w-[500px]">
+          <DialogHeader>
+            <DialogTitle>Add New Product</DialogTitle>
+            <DialogDescription>
+              Enter the details of the new product below.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="name">Product Name *</Label>
+              <Input
+                id="name"
+                placeholder="e.g., MacBook Pro M3"
+                value={newProduct.name}
+                onChange={(e) => setNewProduct({ ...newProduct, name: e.target.value })}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="category">Category *</Label>
+                <Input
+                  id="category"
+                  placeholder="e.g., Electronics"
+                  value={newProduct.category}
+                  onChange={(e) => setNewProduct({ ...newProduct, category: e.target.value })}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="quantity">Quantity *</Label>
+                <Input
+                  id="quantity"
+                  type="number"
+                  placeholder="0"
+                  value={newProduct.quantity}
+                  onChange={(e) => setNewProduct({ ...newProduct, quantity: e.target.value })}
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="size">Size (Optional)</Label>
+              <Input
+                id="size"
+                placeholder="e.g., 14 inch, Large, etc."
+                value={newProduct.size}
+                onChange={(e) => setNewProduct({ ...newProduct, size: e.target.value })}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setIsAddDialogOpen(false)}
+              disabled={isSubmitting}
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleAddProduct} disabled={isSubmitting}>
+              {isSubmitting ? "Adding..." : "Add Product"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Layout>
   );
 }
