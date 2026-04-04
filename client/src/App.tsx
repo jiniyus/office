@@ -7,6 +7,7 @@ import { AuthProvider, ProtectedRoute } from "@/lib/auth";
 import NotFound from "@/pages/not-found";
 import Login from "@/pages/login";
 import Stock from "@/pages/stock";
+import LocationPage from "@/pages/location";
 import HistoryPage from "@/pages/history";
 import Profile from "@/pages/profile";
 
@@ -16,6 +17,9 @@ function Router() {
       <Route path="/login" component={Login} />
       <Route path="/">
         <ProtectedRoute component={Stock} />
+      </Route>
+      <Route path="/location">
+        <ProtectedRoute component={LocationPage} />
       </Route>
       <Route path="/history">
         <ProtectedRoute component={HistoryPage} />

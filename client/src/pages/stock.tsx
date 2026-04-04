@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Plus, Search, Filter, ArrowUpDown, Trash2, Minus, Check, X } from "lucide-react";
+import { Plus, Search, Filter, ArrowUpDown, Trash2, Minus, Check, X, ArrowRightLeft } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { useState, useMemo } from "react";
 import {
@@ -29,8 +29,15 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
-import { useStockItems } from "@/lib/firestore-hooks";
+import { useStockItems, useLocations } from "@/lib/firestore-hooks";
 import { Spinner } from "@/components/ui/spinner";
 import { useAuth } from "@/lib/auth";
 import { collection, addDoc, Timestamp, updateDoc, doc, deleteDoc } from "firebase/firestore";
@@ -42,6 +49,12 @@ export default function Stock() {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
+  const [isTransferDialogOpen, setIsTransferDialogOpen] = useState(false);
+  const [transferSourceId, setTransferSourceId] = useState<string | undefined>(undefined);
+  const [transferData, setTransferData] = useState({
+    targetLocationId: "",
+    quantity: "",
+  });
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | undefined>(undefined);
   const [editingQuantityId, setEditingQuantityId] = useState<string | undefined>(undefined);
   const [tempQuantity, setTempQuantity] = useState<{[key: string]: string}>({});
@@ -51,10 +64,12 @@ export default function Stock() {
     category: "",
     quantity: "",
     size: "",
+    locationId: "",
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
   
   const { items, loading } = useStockItems();
+  const { locations } = useLocations();
   const { user } = useAuth();
   const { toast } = useToast();
 
@@ -129,6 +144,7 @@ export default function Stock() {
         quantityChange: delta,
         previousBalance: previousQty,
         balance: newQty,
+        locationId: currentItem.locationId || null,
         timestamp: Timestamp.now(),
         user: {
           id: user?.uid || "",
@@ -168,24 +184,30 @@ export default function Stock() {
   };
 
   const handleAddProduct = async () => {
-    if (!newProduct.name || !newProduct.category || !newProduct.quantity) {
+    if (!newProduct.name || !newProduct.category) {
       toast({
         variant: "destructive",
         title: "Error",
-        description: "Please fill in all required fields",
+        description: "Please fill in product name and category",
       });
       return;
     }
 
     setIsSubmitting(true);
     try {
-      const initialQuantity = parseInt(newProduct.quantity);
+      const initialQuantity = parseInt(newProduct.quantity) || 0;
+      
+      // Trim whitespace from all text fields
+      const trimmedName = newProduct.name.trim();
+      const trimmedCategory = newProduct.category.trim();
+      const trimmedSize = newProduct.size.trim() || null;
       
       await addDoc(collection(db, "stock-items"), {
-        name: newProduct.name,
-        category: newProduct.category,
+        name: trimmedName,
+        category: trimmedCategory,
         quantity: initialQuantity,
-        size: newProduct.size || null,
+        size: trimmedSize,
+        locationId: newProduct.locationId || null,
         company: user?.company || "",
         createdAt: Timestamp.now(),
         createdBy: user?.email || "",
@@ -199,6 +221,7 @@ export default function Stock() {
         quantityChange: initialQuantity,
         previousBalance: 0,
         balance: initialQuantity,
+        locationId: newProduct.locationId || null,
         timestamp: Timestamp.now(),
         type: 'creation',
         user: {
@@ -212,7 +235,7 @@ export default function Stock() {
         description: "Product added successfully",
       });
 
-      setNewProduct({ name: "", category: "", quantity: "", size: "" });
+      setNewProduct({ name: "", category: "", quantity: "", size: "", locationId: "" });
       setIsAddDialogOpen(false);
     } catch (error) {
       toast({
@@ -222,6 +245,177 @@ export default function Stock() {
       });
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleTransferStock = async () => {
+    if (!transferSourceId || !transferData.targetLocationId || !transferData.quantity) {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Please fill in all fields",
+      });
+      return;
+    }
+
+    try {
+      const sourceItem = items.find(i => i.id === transferSourceId);
+      if (!sourceItem) return;
+
+      const transferQty = parseInt(transferData.quantity);
+      if (transferQty <= 0 || transferQty > sourceItem.quantity) {
+        toast({
+          variant: "destructive",
+          title: "Error",
+          description: "Invalid transfer quantity",
+        });
+        return;
+      }
+
+      // Find matching target item (same name, category, size in target location)
+      // Use trimmed comparison to avoid whitespace issues
+      const targetItem = items.find(
+        item => {
+          const sourceName = sourceItem.name.trim().toLowerCase();
+          const sourceCategory = sourceItem.category.trim().toLowerCase();
+          const sourceSize = (sourceItem.size || "").trim().toLowerCase();
+          const targetName = item.name.trim().toLowerCase();
+          const targetCategory = item.category.trim().toLowerCase();
+          const targetSize = (item.size || "").trim().toLowerCase();
+          
+          return (
+            targetName === sourceName &&
+            targetCategory === sourceCategory &&
+            targetSize === sourceSize &&
+            item.locationId === transferData.targetLocationId
+          );
+        }
+      );
+
+      if (!targetItem) {
+        // Debug: Check what's available in target location
+        const itemsInTargetLocation = items.filter(
+          item => item.locationId === transferData.targetLocationId
+        );
+        
+        console.log("Source item:", {
+          name: sourceItem.name,
+          category: sourceItem.category,
+          size: sourceItem.size || "N/A",
+          locationId: sourceItem.locationId
+        });
+
+        console.log("Items in target location:", itemsInTargetLocation.map(item => ({
+          id: item.id,
+          name: item.name,
+          category: item.category,
+          size: item.size || "N/A",
+          locationId: item.locationId
+        })));
+
+        const sameNameCategory = itemsInTargetLocation.filter(
+          item => {
+            const sourceName = sourceItem.name.trim().toLowerCase();
+            const sourceCategory = sourceItem.category.trim().toLowerCase();
+            const targetName = item.name.trim().toLowerCase();
+            const targetCategory = item.category.trim().toLowerCase();
+            
+            return (
+              targetName === sourceName &&
+              targetCategory === sourceCategory
+            );
+          }
+        );
+
+        let errorMsg = "Target location does not have matching stock. ";
+        
+        if (sameNameCategory.length > 0) {
+          const details = sameNameCategory.map(item => {
+            const mismatch = [];
+            const sourceSize = (sourceItem.size || "").trim().toLowerCase();
+            const targetSize = (item.size || "").trim().toLowerCase();
+            
+            if (targetSize !== sourceSize) {
+              mismatch.push(`size: "${item.size || 'N/A'}" vs "${sourceItem.size || 'N/A'}"`);
+            }
+            return `[${mismatch.join(", ")}]`;
+          }).join(", ");
+          errorMsg += `Found "${sourceItem.name}" but mismatch: ${details}`;
+        } else {
+          errorMsg += `No "${sourceItem.name}" found in target location.`;
+        }
+
+        toast({
+          variant: "destructive",
+          title: "Error",
+          description: errorMsg,
+        });
+        return;
+      }
+
+      // Update source item (decrease)
+      const sourceNewQty = sourceItem.quantity - transferQty;
+      await updateDoc(doc(db, "stock-items", sourceItem.id), {
+        quantity: sourceNewQty,
+        lastUpdated: Timestamp.now()
+      });
+
+      // Update target item (increase)
+      const targetNewQty = targetItem.quantity + transferQty;
+      await updateDoc(doc(db, "stock-items", targetItem.id), {
+        quantity: targetNewQty,
+        lastUpdated: Timestamp.now()
+      });
+
+      // Create transaction record for source (decrease/transfer out)
+      await addDoc(collection(db, "transactions"), {
+        itemId: sourceItem.name,
+        category: sourceItem.category,
+        company: user?.company || "",
+        quantityChange: -transferQty,
+        previousBalance: sourceItem.quantity,
+        balance: sourceNewQty,
+        locationId: sourceItem.locationId || null,
+        timestamp: Timestamp.now(),
+        type: 'transfer',
+        user: {
+          id: user?.uid || "",
+          name: user?.displayName || "Unknown"
+        }
+      });
+
+      // Create transaction record for target (increase/transfer in)
+      await addDoc(collection(db, "transactions"), {
+        itemId: targetItem.name,
+        category: targetItem.category,
+        company: user?.company || "",
+        quantityChange: transferQty,
+        previousBalance: targetItem.quantity,
+        balance: targetNewQty,
+        locationId: targetItem.locationId || null,
+        timestamp: Timestamp.now(),
+        type: 'transfer',
+        user: {
+          id: user?.uid || "",
+          name: user?.displayName || "Unknown"
+        }
+      });
+
+      toast({
+        title: "Success",
+        description: `Transferred ${transferQty} units successfully`,
+      });
+
+      setIsTransferDialogOpen(false);
+      setTransferSourceId(undefined);
+      setTransferData({ targetLocationId: "", quantity: "" });
+    } catch (error) {
+      console.error("Error transferring stock:", error);
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Failed to transfer stock",
+      });
     }
   };
 
@@ -283,6 +477,7 @@ export default function Stock() {
                     <TableHead className="w-[100px]">ID</TableHead>
                     <TableHead>Product Name</TableHead>
                     <TableHead>Category</TableHead>
+                    <TableHead>Location</TableHead>
                     <TableHead className="text-right">
                       <Button variant="ghost" size="sm" className="-mr-3 h-8 data-[state=open]:bg-accent">
                         Quantity
@@ -297,6 +492,7 @@ export default function Stock() {
                 <TableBody>
                   {filteredInventory.map((item) => {
                     const status = getStatus(item.quantity);
+                    const location = item.locationId ? locations.find(l => l.id === item.locationId) : null;
                     return (
                       <TableRow key={item.id} className="hover:bg-slate-50 group">
                         <TableCell className="font-medium text-slate-600">{item.id.slice(0, 12)}</TableCell>
@@ -305,6 +501,9 @@ export default function Stock() {
                           <Badge variant="secondary" className="font-normal text-slate-600">
                             {capitalize(item.category)}
                           </Badge>
+                        </TableCell>
+                        <TableCell className="text-sm font-semibold text-slate-900">
+                          {location ? capitalize(location.name) : 'N/A'}
                         </TableCell>
                         <TableCell className="text-right font-mono text-slate-600">{item.quantity}</TableCell>
                         <TableCell className="text-right font-mono font-medium">{capitalize(item.size || '') || 'N/A'}</TableCell>
@@ -321,14 +520,27 @@ export default function Stock() {
                           </Badge>
                         </TableCell>
                         <TableCell>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-8 w-8 p-0 text-red-600 hover:text-red-700 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-opacity"
-                            onClick={() => setDeleteConfirmId(item.id!)}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
+                          <div className="flex gap-1">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 w-8 p-0 text-blue-600 hover:text-blue-700 hover:bg-blue-50 opacity-0 group-hover:opacity-100 transition-opacity"
+                              onClick={() => {
+                                setTransferSourceId(item.id!);
+                                setIsTransferDialogOpen(true);
+                              }}
+                            >
+                              <ArrowRightLeft className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 w-8 p-0 text-red-600 hover:text-red-700 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-opacity"
+                              onClick={() => setDeleteConfirmId(item.id!)}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
                         </TableCell>
                       </TableRow>
                     );
@@ -341,6 +553,7 @@ export default function Stock() {
             <div className="md:hidden divide-y divide-slate-100">
               {filteredInventory.map((item) => {
                 const status = getStatus(item.quantity);
+                const location = item.locationId ? locations.find(l => l.id === item.locationId) : null;
                 return isViewOnly ? (
                   // Simplified View-Only Mode
                   <div key={item.id} className="p-3 space-y-1">
@@ -350,6 +563,7 @@ export default function Stock() {
                     <div className="flex items-center gap-8">
                       <div className="flex-1">
                         <p className="text-sm font-semibold text-slate-700">{capitalize(item.category)}</p>
+                        <p className="text-xs font-semibold text-slate-700 mt-1">Location: {location ? capitalize(location.name) : 'N/A'}</p>
                       </div>
                       <div className="bg-blue-600 text-white rounded font-bold px-3 py-1 min-w-max flex items-center justify-center">
                         {item.quantity}
@@ -359,19 +573,33 @@ export default function Stock() {
                 ) : (
                   // Full Edit Mode
                   <div key={item.id} className="p-3 space-y-2">
-                    <div className="flex items-start justify-between">
+                    <div className="flex items-start justify-between gap-3">
                       <div>
                         <div className="font-bold text-slate-900 text-lg">{capitalize(item.name)}</div>
                         <div className="text-sm text-slate-600 mt-1 font-medium">{capitalize(item.category)}</div>
+                        <div className="text-xs font-semibold text-slate-700 mt-1">Location: {location ? capitalize(location.name) : 'N/A'}</div>
                       </div>
-                      <Button 
-                        variant="ghost" 
-                        size="sm"
-                        className="h-8 w-8 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
-                        onClick={() => setDeleteConfirmId(item.id!)}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
+                      <div className="flex gap-1 flex-shrink-0">
+                        <Button 
+                          variant="ghost" 
+                          size="sm"
+                          className="h-8 w-8 p-0 text-blue-600 hover:text-blue-700 hover:bg-blue-50"
+                          onClick={() => {
+                            setTransferSourceId(item.id!);
+                            setIsTransferDialogOpen(true);
+                          }}
+                        >
+                          <ArrowRightLeft className="h-4 w-4" />
+                        </Button>
+                        <Button 
+                          variant="ghost" 
+                          size="sm"
+                          className="h-8 w-8 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
+                          onClick={() => setDeleteConfirmId(item.id!)}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
                     </div>
                     
                     <div className="space-y-1">
@@ -517,11 +745,12 @@ export default function Stock() {
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="quantity">Quantity *</Label>
+                <Label htmlFor="quantity">Quantity (Optional)</Label>
                 <Input
                   id="quantity"
                   type="number"
                   placeholder="0"
+                  min="0"
                   value={newProduct.quantity}
                   onChange={(e) => setNewProduct({ ...newProduct, quantity: e.target.value })}
                 />
@@ -536,6 +765,21 @@ export default function Stock() {
                 onChange={(e) => setNewProduct({ ...newProduct, size: e.target.value })}
               />
             </div>
+            <div className="space-y-2">
+              <Label htmlFor="location">Location (Optional)</Label>
+              <Select value={newProduct.locationId} onValueChange={(value) => setNewProduct({ ...newProduct, locationId: value })}>
+                <SelectTrigger id="location">
+                  <SelectValue placeholder="Select a location" />
+                </SelectTrigger>
+                <SelectContent>
+                  {locations.map((location) => (
+                    <SelectItem key={location.id} value={location.id}>
+                      {capitalize(location.name)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
           <DialogFooter>
             <Button
@@ -547,6 +791,78 @@ export default function Stock() {
             </Button>
             <Button onClick={handleAddProduct} disabled={isSubmitting}>
               {isSubmitting ? "Adding..." : "Add Product"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Transfer Stock Dialog */}
+      <Dialog open={isTransferDialogOpen} onOpenChange={setIsTransferDialogOpen}>
+        <DialogContent className="sm:max-w-[500px]">
+          <DialogHeader>
+            <DialogTitle>Transfer Stock</DialogTitle>
+            <DialogDescription>
+              Transfer this stock to another location. The target location must have the same product.
+            </DialogDescription>
+          </DialogHeader>
+          {transferSourceId && (() => {
+            const sourceItem = items.find(i => i.id === transferSourceId);
+            if (!sourceItem) return null;
+            const sourceLocation = sourceItem.locationId ? locations.find(l => l.id === sourceItem.locationId) : null;
+            return (
+              <div className="grid gap-4 py-4">
+                <div className="space-y-2 p-3 bg-slate-50 rounded-lg">
+                  <p className="text-xs font-semibold text-slate-500">FROM</p>
+                  <p className="font-semibold text-slate-900">{capitalize(sourceItem.name)}</p>
+                  <p className="text-xs text-slate-600">Location: {sourceLocation ? capitalize(sourceLocation.name) : 'N/A'}</p>
+                  <p className="text-xs text-slate-600">Available: <span className="font-semibold">{sourceItem.quantity}</span> units</p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="target-location">Transfer To Location *</Label>
+                  <Select value={transferData.targetLocationId} onValueChange={(value) => setTransferData({ ...transferData, targetLocationId: value })}>
+                    <SelectTrigger id="target-location">
+                      <SelectValue placeholder="Select target location" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {locations
+                        .filter(loc => loc.id !== sourceItem.locationId)
+                        .map((location) => (
+                          <SelectItem key={location.id} value={location.id}>
+                            {capitalize(location.name)}
+                          </SelectItem>
+                        ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="transfer-quantity">Quantity to Transfer *</Label>
+                  <Input
+                    id="transfer-quantity"
+                    type="number"
+                    placeholder="0"
+                    max={sourceItem.quantity}
+                    value={transferData.quantity}
+                    onChange={(e) => setTransferData({ ...transferData, quantity: e.target.value })}
+                  />
+                </div>
+              </div>
+            );
+          })()}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setIsTransferDialogOpen(false);
+                setTransferSourceId(undefined);
+                setTransferData({ targetLocationId: "", quantity: "" });
+              }}
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleTransferStock}>
+              Transfer
             </Button>
           </DialogFooter>
         </DialogContent>

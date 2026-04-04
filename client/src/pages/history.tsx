@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ArrowUpRight, ArrowDownLeft, Search, Trash2, Calendar } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { useTransactions } from "@/lib/firestore-hooks";
+import { useTransactions, useLocations } from "@/lib/firestore-hooks";
 import { useState, useMemo } from "react";
 import { Spinner } from "@/components/ui/spinner";
 import { format } from "date-fns";
@@ -21,6 +21,7 @@ import { useToast } from "@/hooks/use-toast";
 
 export default function HistoryPage() {
   const { transactions, loading } = useTransactions();
+  const { locations } = useLocations();
   const [selectedDate, setSelectedDate] = useState<string>("");
   const { toast } = useToast();
 
@@ -117,7 +118,16 @@ export default function HistoryPage() {
           </div>
           <div className="flex items-center gap-2 w-full md:w-auto">
             <div className="relative flex-1 md:flex-none md:w-48">
-              <Calendar className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="absolute left-1 top-1/2 -translate-y-1/2 h-7 w-7 p-0"
+                onClick={() => setSelectedDate("")}
+                title={selectedDate ? "Clear date filter" : "Select date"}
+              >
+                <Calendar className="h-4 w-4 text-slate-400" />
+              </Button>
               <Input
                 type="date"
                 placeholder="Filter by date..."
@@ -167,6 +177,7 @@ export default function HistoryPage() {
               ) : (
                 filteredTransactions.map((entry) => {
                   const isIncrease = entry.quantityChange > 0;
+                  const location = entry.locationId ? locations.find(l => l.id === entry.locationId) : null;
                   return (
                     <div key={entry.id} className="p-3 flex items-center justify-between hover:bg-slate-50 transition-colors gap-4">
                       <div className="flex items-center gap-3 flex-1 min-w-0">
@@ -186,11 +197,19 @@ export default function HistoryPage() {
                             {entry.type === 'creation' && (
                               <Badge className="bg-blue-100 text-blue-700 text-xs">NEW</Badge>
                             )}
+                            {entry.type === 'transfer' && (
+                              <Badge className="bg-purple-100 text-purple-700 text-xs">TRANSFER</Badge>
+                            )}
                           </div>
                           <div className="flex items-center gap-2 flex-wrap mt-1">
                             <Badge variant="secondary" className="text-xs font-normal bg-slate-100 text-slate-600">
                               {capitalize(entry.category)}
                             </Badge>
+                            {location && (
+                              <Badge variant="secondary" className="text-xs font-normal bg-blue-50 text-blue-700">
+                                {capitalize(location.name)}
+                              </Badge>
+                            )}
                             <span className="text-xs text-slate-500">
                               <span className="font-medium text-slate-700">{entry.user.name}</span>
                             </span>

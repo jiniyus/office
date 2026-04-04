@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { collection, query, where, orderBy, onSnapshot, DocumentData } from "firebase/firestore";
 import { db } from "./firebase";
 import { useAuth } from "./auth";
-import { StockItem, Transaction } from "./types";
+import { StockItem, Transaction, Location } from "./types";
 
 export function useStockItems() {
   const [items, setItems] = useState<StockItem[]>([]);
@@ -32,6 +32,7 @@ export function useStockItems() {
             category: data.category,
             quantity: data.quantity || 0,
             size: data.size,
+            locationId: data.locationId,
             company: data.company,
             createdAt: data.createdAt?.toDate() || new Date(),
             createdBy: data.createdBy,
@@ -84,6 +85,7 @@ export function useTransactions(limit: number = 50) {
             quantityChange: data.quantityChange || 0,
             previousBalance: data.previousBalance || 0,
             balance: data.balance || 0,
+            locationId: data.locationId,
             timestamp: data.timestamp?.toDate() || new Date(),
             type: data.type || 'adjustment',
             user: data.user || { id: "", name: "Unknown" }
@@ -104,4 +106,46 @@ export function useTransactions(limit: number = 50) {
   }, [user, user?.company, limit]);
 
   return { transactions, loading, error };
+}
+
+export function useLocations() {
+  const [locations, setLocations] = useState<Location[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+  const { user } = useAuth();
+
+  useEffect(() => {
+    if (!user) {
+      setLoading(false);
+      return;
+    }
+
+    const unsubscribe = onSnapshot(
+      collection(db, "locations"),
+      (snapshot) => {
+        const locationsData: Location[] = snapshot.docs.map((doc) => {
+          const data = doc.data();
+          return {
+            id: doc.id,
+            name: data.name,
+            description: data.description,
+            company: data.company,
+            createdAt: data.createdAt?.toDate() || new Date(),
+            createdBy: data.createdBy,
+          };
+        });
+        setLocations(locationsData);
+        setLoading(false);
+      },
+      (err) => {
+        console.error("Error fetching locations:", err);
+        setError(err as Error);
+        setLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [user]);
+
+  return { locations, loading, error };
 }
