@@ -26,7 +26,10 @@ export interface Transaction {
   itemId: string; // Stock item name/id
   notes?: string;
   quantityChange: number;
+  previousBalance: number;
+  balance: number; // Balance after transaction
   timestamp: Date;
+  type: 'adjustment' | 'creation'; // Track if it's a new item creation or quantity adjustment
   user: {
     id: string;
     name: string;

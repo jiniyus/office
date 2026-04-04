@@ -27,7 +27,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   const SidebarContent = () => (
     <div className="flex flex-col h-full bg-slate-900 text-white">
-      <div className="p-6 border-b border-slate-800">
+      <div className="p-6 border-b border-slate-800 flex items-center justify-start">
         <div className="flex items-center gap-2">
           <div className="h-8 w-8 rounded bg-primary flex items-center justify-center">
             <LayoutDashboard className="h-5 w-5 text-white" />

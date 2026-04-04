@@ -82,7 +82,10 @@ export function useTransactions(limit: number = 50) {
             itemId: data.itemId,
             notes: data.notes,
             quantityChange: data.quantityChange || 0,
+            previousBalance: data.previousBalance || 0,
+            balance: data.balance || 0,
             timestamp: data.timestamp?.toDate() || new Date(),
+            type: data.type || 'adjustment',
             user: data.user || { id: "", name: "Unknown" }
           };
         });

@@ -11,7 +11,8 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Plus, Search, Filter, ArrowUpDown, MoreHorizontal } from "lucide-react";
+import { Plus, Search, Filter, ArrowUpDown, Trash2, Minus, Check, X } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
 import { useState, useMemo } from "react";
 import {
   DropdownMenu,
@@ -32,14 +33,19 @@ import { Label } from "@/components/ui/label";
 import { useStockItems } from "@/lib/firestore-hooks";
 import { Spinner } from "@/components/ui/spinner";
 import { useAuth } from "@/lib/auth";
-import { collection, addDoc, Timestamp } from "firebase/firestore";
+import { collection, addDoc, Timestamp, updateDoc, doc, deleteDoc } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useToast } from "@/hooks/use-toast";
+import { capitalize } from "@/lib/utils";
 
 export default function Stock() {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | undefined>(undefined);
+  const [editingQuantityId, setEditingQuantityId] = useState<string | undefined>(undefined);
+  const [tempQuantity, setTempQuantity] = useState<{[key: string]: string}>({});
+  const [isViewOnly, setIsViewOnly] = useState(false);
   const [newProduct, setNewProduct] = useState({
     name: "",
     category: "",
@@ -98,6 +104,69 @@ export default function Stock() {
     );
   };
 
+  const handleQuantityUpdate = async (itemId: string, delta: number) => {
+    if (delta === 0) return;
+    
+    try {
+      const itemRef = doc(db, "stock-items", itemId);
+      const currentItem = items.find(i => i.id === itemId);
+      if (!currentItem) return;
+      
+      const previousQty = currentItem.quantity;
+      const newQty = Math.max(0, previousQty + delta);
+      
+      // Update stock item
+      await updateDoc(itemRef, {
+        quantity: newQty,
+        lastUpdated: Timestamp.now()
+      });
+      
+      // Create transaction record
+      await addDoc(collection(db, "transactions"), {
+        itemId: currentItem.name,
+        category: currentItem.category,
+        company: user?.company || "",
+        quantityChange: delta,
+        previousBalance: previousQty,
+        balance: newQty,
+        timestamp: Timestamp.now(),
+        user: {
+          id: user?.uid || "",
+          name: user?.displayName || "Unknown"
+        }
+      });
+      
+      toast({
+        title: "Success",
+        description: `Quantity updated by ${delta > 0 ? '+' : ''}${delta}`,
+      });
+    } catch (error) {
+      console.error("Error updating quantity:", error);
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Failed to update quantity",
+      });
+    }
+  };
+
+  const handleDeleteItem = async (itemId: string) => {
+    try {
+      await deleteDoc(doc(db, "stock-items", itemId));
+      toast({
+        title: "Success",
+        description: "Item deleted successfully",
+      });
+      setDeleteConfirmId(undefined);
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Failed to delete item",
+      });
+    }
+  };
+
   const handleAddProduct = async () => {
     if (!newProduct.name || !newProduct.category || !newProduct.quantity) {
       toast({
@@ -110,14 +179,32 @@ export default function Stock() {
 
     setIsSubmitting(true);
     try {
+      const initialQuantity = parseInt(newProduct.quantity);
+      
       await addDoc(collection(db, "stock-items"), {
         name: newProduct.name,
         category: newProduct.category,
-        quantity: parseInt(newProduct.quantity),
+        quantity: initialQuantity,
         size: newProduct.size || null,
         company: user?.company || "",
         createdAt: Timestamp.now(),
         createdBy: user?.email || "",
+      });
+
+      // Create transaction record for stock item creation
+      await addDoc(collection(db, "transactions"), {
+        itemId: newProduct.name,
+        category: newProduct.category,
+        company: user?.company || "",
+        quantityChange: initialQuantity,
+        previousBalance: 0,
+        balance: initialQuantity,
+        timestamp: Timestamp.now(),
+        type: 'creation',
+        user: {
+          id: user?.uid || "",
+          name: user?.displayName || "Unknown"
+        }
       });
 
       toast({
@@ -152,79 +239,24 @@ export default function Stock() {
     <Layout>
       <div className="flex flex-col gap-8">
         {/* Header Section */}
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="flex flex-col gap-4">
           <div>
             <h1 className="text-3xl font-bold tracking-tight text-slate-900">Inventory Stock</h1>
             <p className="text-slate-500 mt-1">Manage your products and view real-time stock levels.</p>
           </div>
-          <div className="flex gap-2">
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" className="h-10">
-                  <Filter className="mr-2 h-4 w-4" /> 
-                  Filter
-                  {selectedCategories.length > 0 && (
-                    <Badge variant="secondary" className="ml-2 h-5 px-1">
-                      {selectedCategories.length}
-                    </Badge>
-                  )}
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-48">
-                {categories.map((category) => (
-                  <DropdownMenuCheckboxItem
-                    key={category}
-                    checked={selectedCategories.includes(category)}
-                    onCheckedChange={() => handleCategoryToggle(category)}
-                  >
-                    {category}
-                  </DropdownMenuCheckboxItem>
-                ))}
-                {categories.length === 0 && (
-                  <div className="px-2 py-1.5 text-sm text-slate-500">
-                    No categories yet
-                  </div>
-                )}
-              </DropdownMenuContent>
-            </DropdownMenu>
+          <div className="flex items-center justify-between gap-4">
             <Button 
-              className="h-10 shadow-lg shadow-primary/20"
+              className="flex-1 h-10 shadow-lg shadow-primary/20"
               onClick={() => setIsAddDialogOpen(true)}
+              disabled={isViewOnly}
             >
               <Plus className="mr-2 h-4 w-4" /> Add Product
             </Button>
+            <div className="flex items-center gap-3">
+              <span className="text-sm font-semibold text-slate-700">Stock View</span>
+              <Switch checked={isViewOnly} onCheckedChange={setIsViewOnly} />
+            </div>
           </div>
-        </div>
-
-        {/* Stats Cards */}
-        <div className="grid gap-4 md:grid-cols-3">
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium text-slate-500">Total Products</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{stats.totalProducts}</div>
-              <p className="text-xs text-slate-500">Active inventory items</p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium text-slate-500">Total Quantity</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{items.reduce((sum, item) => sum + item.quantity, 0)}</div>
-              <p className="text-xs text-slate-500">Units in stock</p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium text-slate-500">Low Stock Items</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-amber-600">{stats.lowStockItems}</div>
-              <p className="text-xs text-slate-500">Requires attention</p>
-            </CardContent>
-          </Card>
         </div>
 
         {/* Main Table Card */}
@@ -268,14 +300,14 @@ export default function Stock() {
                     return (
                       <TableRow key={item.id} className="hover:bg-slate-50 group">
                         <TableCell className="font-medium text-slate-600">{item.id.slice(0, 12)}</TableCell>
-                        <TableCell className="font-semibold text-slate-900">{item.name}</TableCell>
+                        <TableCell className="font-semibold text-slate-900">{capitalize(item.name)}</TableCell>
                         <TableCell>
                           <Badge variant="secondary" className="font-normal text-slate-600">
-                            {item.category}
+                            {capitalize(item.category)}
                           </Badge>
                         </TableCell>
                         <TableCell className="text-right font-mono text-slate-600">{item.quantity}</TableCell>
-                        <TableCell className="text-right font-mono font-medium">{item.size || 'N/A'}</TableCell>
+                        <TableCell className="text-right font-mono font-medium">{capitalize(item.size || '') || 'N/A'}</TableCell>
                         <TableCell>
                           <Badge 
                             variant="outline" 
@@ -289,18 +321,14 @@ export default function Stock() {
                           </Badge>
                         </TableCell>
                         <TableCell>
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <Button variant="ghost" className="h-8 w-8 p-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                                <MoreHorizontal className="h-4 w-4" />
-                              </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end">
-                              <DropdownMenuItem>Edit details</DropdownMenuItem>
-                              <DropdownMenuItem>Update stock</DropdownMenuItem>
-                              <DropdownMenuItem className="text-red-600">Delete item</DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 w-8 p-0 text-red-600 hover:text-red-700 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-opacity"
+                            onClick={() => setDeleteConfirmId(item.id!)}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
                         </TableCell>
                       </TableRow>
                     );
@@ -313,49 +341,113 @@ export default function Stock() {
             <div className="md:hidden divide-y divide-slate-100">
               {filteredInventory.map((item) => {
                 const status = getStatus(item.quantity);
-                return (
-                  <div key={item.id} className="p-4 space-y-3">
+                return isViewOnly ? (
+                  // Simplified View-Only Mode
+                  <div key={item.id} className="p-3 space-y-1">
+                    <div>
+                      <div className="font-bold text-slate-900 text-base">{capitalize(item.name)}</div>
+                    </div>
+                    <div className="flex items-center gap-8">
+                      <div className="flex-1">
+                        <p className="text-sm font-semibold text-slate-700">{capitalize(item.category)}</p>
+                      </div>
+                      <div className="bg-blue-600 text-white rounded font-bold px-3 py-1 min-w-max flex items-center justify-center">
+                        {item.quantity}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  // Full Edit Mode
+                  <div key={item.id} className="p-3 space-y-2">
                     <div className="flex items-start justify-between">
                       <div>
-                        <div className="font-semibold text-slate-900">{item.name}</div>
-                        <div className="text-xs text-slate-500 mt-1">{item.id.slice(0, 12)} • {item.category}</div>
+                        <div className="font-bold text-slate-900 text-lg">{capitalize(item.name)}</div>
+                        <div className="text-sm text-slate-600 mt-1 font-medium">{capitalize(item.category)}</div>
                       </div>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" className="h-8 w-8 p-0">
-                            <MoreHorizontal className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem>Edit details</DropdownMenuItem>
-                          <DropdownMenuItem>Update stock</DropdownMenuItem>
-                          <DropdownMenuItem className="text-red-600">Delete item</DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+                      <Button 
+                        variant="ghost" 
+                        size="sm"
+                        className="h-8 w-8 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
+                        onClick={() => setDeleteConfirmId(item.id!)}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
                     </div>
                     
-                    <div className="flex items-center justify-between text-sm">
-                      <div className="flex flex-col">
-                        <span className="text-slate-500 text-xs uppercase tracking-wider font-medium">Quantity</span>
-                        <span className="font-mono text-slate-700">{item.quantity} units</span>
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="text-slate-500 text-xs uppercase tracking-wider font-bold">Size</span>
+                        <span className="text-slate-500 text-xs uppercase tracking-wider font-bold">Quantity</span>
                       </div>
-                      <div className="flex flex-col text-right">
-                        <span className="text-slate-500 text-xs uppercase tracking-wider font-medium">Size</span>
-                        <span className="font-mono text-slate-700">{item.size || 'N/A'}</span>
+                      <div className="flex items-end justify-between gap-4">
+                        <span className="font-mono text-slate-700 font-bold">{capitalize(item.size || '') || 'N/A'}</span>
+                        <div className="bg-blue-600 text-white rounded font-bold px-3 py-1 min-w-max flex items-center justify-center">
+                          {item.quantity}
+                        </div>
                       </div>
                     </div>
 
-                    <div>
-                      <Badge 
-                        variant="outline" 
-                        className={`w-full justify-center py-1
-                          ${status === 'In Stock' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : ''}
-                          ${status === 'Low Stock' ? 'bg-amber-50 text-amber-700 border-amber-200' : ''}
-                          ${status === 'Out of Stock' ? 'bg-red-50 text-red-700 border-red-200' : ''}
-                        `}
+                    <div className="flex items-center justify-center gap-2 bg-slate-50 rounded-lg p-3">
+                      {editingQuantityId === item.id && (
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          className="h-8 w-8 p-0"
+                          onClick={() => {
+                            setEditingQuantityId(undefined);
+                            setTempQuantity({...tempQuantity, [item.id]: ""});
+                          }}
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
+                      )}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-8 w-8 p-0"
+                        onClick={() => {
+                          setEditingQuantityId(item.id!);
+                          setTempQuantity({...tempQuantity, [item.id]: ((parseInt(tempQuantity[item.id] || "0") || 0) - 1).toString()});
+                        }}
                       >
-                        {status}
-                      </Badge>
+                        <Minus className="h-4 w-4" />
+                      </Button>
+                      <Input
+                        type="number"
+                        className="w-16 h-8 text-center"
+                        placeholder="0"
+                        value={tempQuantity[item.id] || ""}
+                        onChange={(e) => {
+                          setEditingQuantityId(item.id!);
+                          setTempQuantity({...tempQuantity, [item.id]: e.target.value});
+                        }}
+                      />
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-8 w-8 p-0"
+                        onClick={() => {
+                          setEditingQuantityId(item.id!);
+                          setTempQuantity({...tempQuantity, [item.id]: ((parseInt(tempQuantity[item.id] || "0") || 0) + 1).toString()});
+                        }}
+                      >
+                        <Plus className="h-4 w-4" />
+                      </Button>
+                      {editingQuantityId === item.id && (
+                        <Button
+                          variant="default"
+                          size="sm"
+                          className="h-8 w-8 p-0 bg-green-600 hover:bg-green-700"
+                          onClick={() => {
+                            const delta = parseInt(tempQuantity[item.id]) || 0;
+                            handleQuantityUpdate(item.id!, delta);
+                            setEditingQuantityId(undefined);
+                            setTempQuantity({...tempQuantity, [item.id]: ""});
+                          }}
+                        >
+                          <Check className="h-4 w-4" />
+                        </Button>
+                      )}
                     </div>
                   </div>
                 );
@@ -364,6 +456,36 @@ export default function Stock() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={deleteConfirmId !== undefined} onOpenChange={(open) => !open && setDeleteConfirmId(undefined)}>
+        <DialogContent className="sm:max-w-[400px]">
+          <DialogHeader>
+            <DialogTitle>Delete Item</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete this item? This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              onClick={() => setDeleteConfirmId(undefined)}
+            >
+              No, Keep It
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                if (deleteConfirmId) {
+                  handleDeleteItem(deleteConfirmId);
+                }
+              }}
+            >
+              Yes, Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Add Product Dialog */}
       <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
@@ -379,7 +501,7 @@ export default function Stock() {
               <Label htmlFor="name">Product Name *</Label>
               <Input
                 id="name"
-                placeholder="e.g., MacBook Pro M3"
+                placeholder="Product name"
                 value={newProduct.name}
                 onChange={(e) => setNewProduct({ ...newProduct, name: e.target.value })}
               />
@@ -389,7 +511,7 @@ export default function Stock() {
                 <Label htmlFor="category">Category *</Label>
                 <Input
                   id="category"
-                  placeholder="e.g., Electronics"
+                  placeholder="Category"
                   value={newProduct.category}
                   onChange={(e) => setNewProduct({ ...newProduct, category: e.target.value })}
                 />
@@ -409,7 +531,7 @@ export default function Stock() {
               <Label htmlFor="size">Size (Optional)</Label>
               <Input
                 id="size"
-                placeholder="e.g., 14 inch, Large, etc."
+                placeholder="Size"
                 value={newProduct.size}
                 onChange={(e) => setNewProduct({ ...newProduct, size: e.target.value })}
               />
