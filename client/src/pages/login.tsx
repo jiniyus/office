@@ -18,17 +18,16 @@ export default function Login() {
 
   return (
     <div className="min-h-screen flex items-center justify-center relative overflow-hidden">
-      {/* Background Image */}
+      {/* Blue Gradient Background */}
       <div 
-        className="absolute inset-0 z-0 bg-cover bg-center"
+        className="absolute inset-0 z-0"
         style={{ 
-          backgroundImage: 'url("/images/login-bg.png")',
-          filter: 'brightness(0.85)'
+          background: 'linear-gradient(135deg, #0f172a 0%, #1e3a8a 40%, #2563eb 70%, #38bdf8 100%)'
         }}
       />
       
-      {/* Overlay Gradient */}
-      <div className="absolute inset-0 z-10 bg-gradient-to-tr from-slate-900/90 to-primary/40 backdrop-blur-[2px]" />
+      {/* Subtle overlay for depth */}
+      <div className="absolute inset-0 z-10" style={{ background: 'radial-gradient(ellipse at center, transparent 0%, rgba(0,0,0,0.3) 100%)' }} />
 
       <Card className="w-full max-w-md relative z-20 border-white/10 bg-white/95 backdrop-blur-xl shadow-2xl">
         <CardHeader className="space-y-1 text-center pb-8 pt-10">
