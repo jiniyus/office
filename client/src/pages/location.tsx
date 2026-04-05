@@ -171,7 +171,7 @@ export default function LocationPage() {
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="h-8 w-8 p-0 text-red-600 hover:text-red-700 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+                      className="h-8 w-8 p-0 text-red-600 hover:text-red-700 hover:bg-red-50 flex-shrink-0"
                       onClick={() => setDeleteConfirmId(location.id)}
                     >
                       <Trash2 className="h-4 w-4" />
