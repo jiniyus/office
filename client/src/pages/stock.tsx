@@ -1,26 +1,11 @@
 import { Layout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { 
-  Table, 
-  TableBody, 
-  TableCell, 
-  TableHead, 
-  TableHeader, 
-  TableRow 
-} from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Plus, Search, Filter, ArrowUpDown, Trash2, Minus, Check, X, ArrowRightLeft } from "lucide-react";
+import { Card, CardContent } from "@/components/ui/card";
+import { Plus, Search, Trash2, Minus, Check, X, ArrowRightLeft } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { useState, useMemo } from "react";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-  DropdownMenuCheckboxItem,
-} from "@/components/ui/dropdown-menu";
 import {
   Dialog,
   DialogContent,
@@ -73,70 +58,31 @@ export default function Stock() {
   const { user } = useAuth();
   const { toast } = useToast();
 
-  // Get unique categories
   const categories = useMemo(() => {
     const cats = Array.from(new Set(items.map(item => item.category)));
     return cats.sort();
   }, [items]);
 
-  // Filter items based on search and category
   const filteredInventory = useMemo(() => {
     return items.filter(item => {
       const matchesSearch = item.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
         item.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
         item.category.toLowerCase().includes(searchTerm.toLowerCase());
-      
       const matchesCategory = selectedCategories.length === 0 || 
         selectedCategories.includes(item.category);
-      
       return matchesSearch && matchesCategory;
     });
   }, [items, searchTerm, selectedCategories]);
 
-  // Calculate stats
-  const stats = useMemo(() => {
-    const totalProducts = items.length;
-    const lowStockItems = items.filter(item => item.quantity > 0 && item.quantity <= 10).length;
-    
-    return {
-      totalProducts,
-      lowStockItems
-    };
-  }, [items]);
-
-  // Get status based on quantity
-  const getStatus = (quantity: number) => {
-    if (quantity === 0) return "Out of Stock";
-    if (quantity <= 10) return "Low Stock";
-    return "In Stock";
-  };
-
-  const handleCategoryToggle = (category: string) => {
-    setSelectedCategories(prev =>
-      prev.includes(category)
-        ? prev.filter(c => c !== category)
-        : [...prev, category]
-    );
-  };
-
   const handleQuantityUpdate = async (itemId: string, delta: number) => {
     if (delta === 0) return;
-    
     try {
       const itemRef = doc(db, "stock-items", itemId);
       const currentItem = items.find(i => i.id === itemId);
       if (!currentItem) return;
-      
       const previousQty = currentItem.quantity;
       const newQty = Math.max(0, previousQty + delta);
-      
-      // Update stock item
-      await updateDoc(itemRef, {
-        quantity: newQty,
-        lastUpdated: Timestamp.now()
-      });
-      
-      // Create transaction record
+      await updateDoc(itemRef, { quantity: newQty, lastUpdated: Timestamp.now() });
       await addDoc(collection(db, "transactions"), {
         itemId: currentItem.name,
         category: currentItem.category,
@@ -146,62 +92,35 @@ export default function Stock() {
         balance: newQty,
         locationId: currentItem.locationId || null,
         timestamp: Timestamp.now(),
-        user: {
-          id: user?.uid || "",
-          name: user?.displayName || "Unknown"
-        }
+        user: { id: user?.uid || "", name: user?.displayName || "Unknown" }
       });
-      
-      toast({
-        title: "Success",
-        description: `Quantity updated by ${delta > 0 ? '+' : ''}${delta}`,
-      });
+      toast({ title: "Success", description: `Quantity updated by ${delta > 0 ? '+' : ''}${delta}` });
     } catch (error) {
-      console.error("Error updating quantity:", error);
-      toast({
-        variant: "destructive",
-        title: "Error",
-        description: "Failed to update quantity",
-      });
+      toast({ variant: "destructive", title: "Error", description: "Failed to update quantity" });
     }
   };
 
   const handleDeleteItem = async (itemId: string) => {
     try {
       await deleteDoc(doc(db, "stock-items", itemId));
-      toast({
-        title: "Success",
-        description: "Item deleted successfully",
-      });
+      toast({ title: "Success", description: "Item deleted successfully" });
       setDeleteConfirmId(undefined);
     } catch (error) {
-      toast({
-        variant: "destructive",
-        title: "Error",
-        description: "Failed to delete item",
-      });
+      toast({ variant: "destructive", title: "Error", description: "Failed to delete item" });
     }
   };
 
   const handleAddProduct = async () => {
     if (!newProduct.name || !newProduct.category) {
-      toast({
-        variant: "destructive",
-        title: "Error",
-        description: "Please fill in product name and category",
-      });
+      toast({ variant: "destructive", title: "Error", description: "Please fill in product name and category" });
       return;
     }
-
     setIsSubmitting(true);
     try {
       const initialQuantity = parseInt(newProduct.quantity) || 0;
-      
-      // Trim whitespace from all text fields
       const trimmedName = newProduct.name.trim();
       const trimmedCategory = newProduct.category.trim();
       const trimmedSize = newProduct.size.trim() || null;
-      
       await addDoc(collection(db, "stock-items"), {
         name: trimmedName,
         category: trimmedCategory,
@@ -212,8 +131,6 @@ export default function Stock() {
         createdAt: Timestamp.now(),
         createdBy: user?.email || "",
       });
-
-      // Create transaction record for stock item creation
       await addDoc(collection(db, "transactions"), {
         itemId: newProduct.name,
         category: newProduct.category,
@@ -224,25 +141,13 @@ export default function Stock() {
         locationId: newProduct.locationId || null,
         timestamp: Timestamp.now(),
         type: 'creation',
-        user: {
-          id: user?.uid || "",
-          name: user?.displayName || "Unknown"
-        }
+        user: { id: user?.uid || "", name: user?.displayName || "Unknown" }
       });
-
-      toast({
-        title: "Success",
-        description: "Product added successfully",
-      });
-
+      toast({ title: "Success", description: "Product added successfully" });
       setNewProduct({ name: "", category: "", quantity: "", size: "", locationId: "" });
       setIsAddDialogOpen(false);
     } catch (error) {
-      toast({
-        variant: "destructive",
-        title: "Error",
-        description: "Failed to add product",
-      });
+      toast({ variant: "destructive", title: "Error", description: "Failed to add product" });
     } finally {
       setIsSubmitting(false);
     }
@@ -250,181 +155,61 @@ export default function Stock() {
 
   const handleTransferStock = async () => {
     if (!transferSourceId || !transferData.targetLocationId || !transferData.quantity) {
-      toast({
-        variant: "destructive",
-        title: "Error",
-        description: "Please fill in all fields",
-      });
+      toast({ variant: "destructive", title: "Error", description: "Please fill in all fields" });
       return;
     }
-
     try {
       const sourceItem = items.find(i => i.id === transferSourceId);
       if (!sourceItem) return;
-
       const transferQty = parseInt(transferData.quantity);
       if (transferQty <= 0 || transferQty > sourceItem.quantity) {
-        toast({
-          variant: "destructive",
-          title: "Error",
-          description: "Invalid transfer quantity",
-        });
+        toast({ variant: "destructive", title: "Error", description: "Invalid transfer quantity" });
         return;
       }
-
-      // Find matching target item (same name, category, size in target location)
-      // Use trimmed comparison to avoid whitespace issues
-      const targetItem = items.find(
-        item => {
-          const sourceName = sourceItem.name.trim().toLowerCase();
-          const sourceCategory = sourceItem.category.trim().toLowerCase();
-          const sourceSize = (sourceItem.size || "").trim().toLowerCase();
-          const targetName = item.name.trim().toLowerCase();
-          const targetCategory = item.category.trim().toLowerCase();
-          const targetSize = (item.size || "").trim().toLowerCase();
-          
-          return (
-            targetName === sourceName &&
-            targetCategory === sourceCategory &&
-            targetSize === sourceSize &&
-            item.locationId === transferData.targetLocationId
-          );
-        }
-      );
-
+      const targetItem = items.find(item => {
+        const sourceName = sourceItem.name.trim().toLowerCase();
+        const sourceCategory = sourceItem.category.trim().toLowerCase();
+        const sourceSize = (sourceItem.size || "").trim().toLowerCase();
+        return (
+          item.name.trim().toLowerCase() === sourceName &&
+          item.category.trim().toLowerCase() === sourceCategory &&
+          (item.size || "").trim().toLowerCase() === sourceSize &&
+          item.locationId === transferData.targetLocationId
+        );
+      });
       if (!targetItem) {
-        // Debug: Check what's available in target location
-        const itemsInTargetLocation = items.filter(
-          item => item.locationId === transferData.targetLocationId
-        );
-        
-        console.log("Source item:", {
-          name: sourceItem.name,
-          category: sourceItem.category,
-          size: sourceItem.size || "N/A",
-          locationId: sourceItem.locationId
-        });
-
-        console.log("Items in target location:", itemsInTargetLocation.map(item => ({
-          id: item.id,
-          name: item.name,
-          category: item.category,
-          size: item.size || "N/A",
-          locationId: item.locationId
-        })));
-
-        const sameNameCategory = itemsInTargetLocation.filter(
-          item => {
-            const sourceName = sourceItem.name.trim().toLowerCase();
-            const sourceCategory = sourceItem.category.trim().toLowerCase();
-            const targetName = item.name.trim().toLowerCase();
-            const targetCategory = item.category.trim().toLowerCase();
-            
-            return (
-              targetName === sourceName &&
-              targetCategory === sourceCategory
-            );
-          }
-        );
-
-        let errorMsg = "Target location does not have matching stock. ";
-        
-        if (sameNameCategory.length > 0) {
-          const details = sameNameCategory.map(item => {
-            const mismatch = [];
-            const sourceSize = (sourceItem.size || "").trim().toLowerCase();
-            const targetSize = (item.size || "").trim().toLowerCase();
-            
-            if (targetSize !== sourceSize) {
-              mismatch.push(`size: "${item.size || 'N/A'}" vs "${sourceItem.size || 'N/A'}"`);
-            }
-            return `[${mismatch.join(", ")}]`;
-          }).join(", ");
-          errorMsg += `Found "${sourceItem.name}" but mismatch: ${details}`;
-        } else {
-          errorMsg += `No "${sourceItem.name}" found in target location.`;
-        }
-
-        toast({
-          variant: "destructive",
-          title: "Error",
-          description: errorMsg,
-        });
+        toast({ variant: "destructive", title: "Error", description: `No matching stock found in target location.` });
         return;
       }
-
-      // Update source item (decrease)
       const sourceNewQty = sourceItem.quantity - transferQty;
-      await updateDoc(doc(db, "stock-items", sourceItem.id), {
-        quantity: sourceNewQty,
-        lastUpdated: Timestamp.now()
-      });
-
-      // Update target item (increase)
       const targetNewQty = targetItem.quantity + transferQty;
-      await updateDoc(doc(db, "stock-items", targetItem.id), {
-        quantity: targetNewQty,
-        lastUpdated: Timestamp.now()
-      });
-
-      // Create transaction record for source (decrease/transfer out)
+      await updateDoc(doc(db, "stock-items", sourceItem.id), { quantity: sourceNewQty, lastUpdated: Timestamp.now() });
+      await updateDoc(doc(db, "stock-items", targetItem.id), { quantity: targetNewQty, lastUpdated: Timestamp.now() });
       await addDoc(collection(db, "transactions"), {
-        itemId: sourceItem.name,
-        category: sourceItem.category,
-        company: user?.company || "",
-        quantityChange: -transferQty,
-        previousBalance: sourceItem.quantity,
-        balance: sourceNewQty,
-        locationId: sourceItem.locationId || null,
-        timestamp: Timestamp.now(),
-        type: 'transfer',
-        user: {
-          id: user?.uid || "",
-          name: user?.displayName || "Unknown"
-        }
+        itemId: sourceItem.name, category: sourceItem.category, company: user?.company || "",
+        quantityChange: -transferQty, previousBalance: sourceItem.quantity, balance: sourceNewQty,
+        locationId: sourceItem.locationId || null, timestamp: Timestamp.now(), type: 'transfer',
+        user: { id: user?.uid || "", name: user?.displayName || "Unknown" }
       });
-
-      // Create transaction record for target (increase/transfer in)
       await addDoc(collection(db, "transactions"), {
-        itemId: targetItem.name,
-        category: targetItem.category,
-        company: user?.company || "",
-        quantityChange: transferQty,
-        previousBalance: targetItem.quantity,
-        balance: targetNewQty,
-        locationId: targetItem.locationId || null,
-        timestamp: Timestamp.now(),
-        type: 'transfer',
-        user: {
-          id: user?.uid || "",
-          name: user?.displayName || "Unknown"
-        }
+        itemId: targetItem.name, category: targetItem.category, company: user?.company || "",
+        quantityChange: transferQty, previousBalance: targetItem.quantity, balance: targetNewQty,
+        locationId: targetItem.locationId || null, timestamp: Timestamp.now(), type: 'transfer',
+        user: { id: user?.uid || "", name: user?.displayName || "Unknown" }
       });
-
-      toast({
-        title: "Success",
-        description: `Transferred ${transferQty} units successfully`,
-      });
-
+      toast({ title: "Success", description: `Transferred ${transferQty} units successfully` });
       setIsTransferDialogOpen(false);
       setTransferSourceId(undefined);
       setTransferData({ targetLocationId: "", quantity: "" });
     } catch (error) {
-      console.error("Error transferring stock:", error);
-      toast({
-        variant: "destructive",
-        title: "Error",
-        description: "Failed to transfer stock",
-      });
+      toast({ variant: "destructive", title: "Error", description: "Failed to transfer stock" });
     }
   };
 
   if (loading) {
     return (
       <Layout>
-        <div className="flex items-center justify-center h-64">
-          <Spinner />
-        </div>
+        <div className="flex items-center justify-center h-64"><Spinner /></div>
       </Layout>
     );
   }
@@ -439,7 +224,7 @@ export default function Stock() {
             <p className="text-slate-500 mt-1">Manage your products and view real-time stock levels.</p>
           </div>
           <div className="flex items-center justify-between gap-4">
-            <Button 
+            <Button
               className="flex-1 h-10 shadow-lg shadow-primary/20"
               onClick={() => setIsAddDialogOpen(true)}
               disabled={isViewOnly}
@@ -453,10 +238,10 @@ export default function Stock() {
           </div>
         </div>
 
-        {/* Main Table Card */}
+        {/* Main Card */}
         <Card className="border-slate-200 shadow-sm">
           <CardContent className="p-0">
-            {/* Toolbar */}
+            {/* Search Bar */}
             <div className="flex items-center p-4 border-b border-slate-100 bg-slate-50/50">
               <div className="relative max-w-sm flex-1">
                 <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
@@ -469,217 +254,129 @@ export default function Stock() {
               </div>
             </div>
 
-            {/* Desktop Table View */}
-            <div className="hidden md:block">
-              <Table>
-                <TableHeader>
-                  <TableRow className="hover:bg-slate-50/50">
-                    <TableHead className="w-[100px]">ID</TableHead>
-                    <TableHead>Product Name</TableHead>
-                    <TableHead>Category</TableHead>
-                    <TableHead>Location</TableHead>
-                    <TableHead className="text-right">
-                      <Button variant="ghost" size="sm" className="-mr-3 h-8 data-[state=open]:bg-accent">
-                        Quantity
-                        <ArrowUpDown className="ml-2 h-4 w-4" />
-                      </Button>
-                    </TableHead>
-                    <TableHead className="text-right">Size</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead className="w-[50px]"></TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filteredInventory.map((item) => {
-                    const status = getStatus(item.quantity);
-                    const location = item.locationId ? locations.find(l => l.id === item.locationId) : null;
-                    return (
-                      <TableRow key={item.id} className="hover:bg-slate-50 group">
-                        <TableCell className="font-medium text-slate-600">{item.id.slice(0, 12)}</TableCell>
-                        <TableCell className="font-semibold text-slate-900">{capitalize(item.name)}</TableCell>
-                        <TableCell>
-                          <Badge variant="secondary" className="font-normal text-slate-600">
-                            {capitalize(item.category)}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="text-sm font-semibold text-slate-900">
-                          {location ? capitalize(location.name) : 'N/A'}
-                        </TableCell>
-                        <TableCell className="text-right font-mono text-slate-600">{item.quantity}</TableCell>
-                        <TableCell className="text-right font-mono font-medium">{capitalize(item.size || '') || 'N/A'}</TableCell>
-                        <TableCell>
-                          <Badge 
-                            variant="outline" 
-                            className={`
-                              ${status === 'In Stock' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : ''}
-                              ${status === 'Low Stock' ? 'bg-amber-50 text-amber-700 border-amber-200' : ''}
-                              ${status === 'Out of Stock' ? 'bg-red-50 text-red-700 border-red-200' : ''}
-                            `}
-                          >
-                            {status}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex gap-1">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-8 w-8 p-0 text-blue-600 hover:text-blue-700 hover:bg-blue-50 opacity-0 group-hover:opacity-100 transition-opacity"
-                              onClick={() => {
-                                setTransferSourceId(item.id!);
-                                setIsTransferDialogOpen(true);
-                              }}
-                            >
-                              <ArrowRightLeft className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-8 w-8 p-0 text-red-600 hover:text-red-700 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-opacity"
-                              onClick={() => setDeleteConfirmId(item.id!)}
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            </div>
-
-            {/* Mobile Card View */}
-            <div className="md:hidden divide-y divide-slate-100">
-              {filteredInventory.map((item) => {
-                const status = getStatus(item.quantity);
-                const location = item.locationId ? locations.find(l => l.id === item.locationId) : null;
-                return isViewOnly ? (
-                  // Simplified View-Only Mode
-                  <div key={item.id} className="p-3 space-y-1">
-                    <div>
+            {/* Unified Card View — same on mobile and desktop */}
+            <div className="divide-y divide-slate-100">
+              {filteredInventory.length === 0 ? (
+                <div className="p-8 text-center text-slate-500">No products found</div>
+              ) : (
+                filteredInventory.map((item) => {
+                  const location = item.locationId ? locations.find(l => l.id === item.locationId) : null;
+                  return isViewOnly ? (
+                    // View Only Mode
+                    <div key={item.id} className="p-3 space-y-1">
                       <div className="font-bold text-slate-900 text-base">{capitalize(item.name)}</div>
-                    </div>
-                    <div className="flex items-center gap-8">
-                      <div className="flex-1">
-                        <p className="text-sm font-semibold text-slate-700">{capitalize(item.category)}</p>
-                        <p className="text-xs font-semibold text-slate-700 mt-1">Location: {location ? capitalize(location.name) : 'N/A'}</p>
-                      </div>
-                      <div className="bg-blue-600 text-white rounded font-bold px-3 py-1 min-w-max flex items-center justify-center">
-                        {item.quantity}
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  // Full Edit Mode
-                  <div key={item.id} className="p-3 space-y-2">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="font-bold text-slate-900 text-lg">{capitalize(item.name)}</div>
-                        <div className="text-sm text-slate-600 mt-1 font-medium">{capitalize(item.category)}</div>
-                        <div className="text-xs font-semibold text-slate-700 mt-1">Location: {location ? capitalize(location.name) : 'N/A'}</div>
-                      </div>
-                      <div className="flex gap-1 flex-shrink-0">
-                        <Button 
-                          variant="ghost" 
-                          size="sm"
-                          className="h-8 w-8 p-0 text-blue-600 hover:text-blue-700 hover:bg-blue-50"
-                          onClick={() => {
-                            setTransferSourceId(item.id!);
-                            setIsTransferDialogOpen(true);
-                          }}
-                        >
-                          <ArrowRightLeft className="h-4 w-4" />
-                        </Button>
-                        <Button 
-                          variant="ghost" 
-                          size="sm"
-                          className="h-8 w-8 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
-                          onClick={() => setDeleteConfirmId(item.id!)}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    </div>
-                    
-                    <div className="space-y-1">
-                      <div className="flex items-center justify-between">
-                        <span className="text-slate-500 text-xs uppercase tracking-wider font-bold">Size</span>
-                        <span className="text-slate-500 text-xs uppercase tracking-wider font-bold">Quantity</span>
-                      </div>
-                      <div className="flex items-end justify-between gap-4">
-                        <span className="font-mono text-slate-700 font-bold">{capitalize(item.size || '') || 'N/A'}</span>
+                      <div className="flex items-center gap-8">
+                        <div className="flex-1">
+                          <p className="text-sm font-semibold text-slate-700">{capitalize(item.category)}</p>
+                          <p className="text-xs font-semibold text-slate-700 mt-1">Location: {location ? capitalize(location.name) : 'N/A'}</p>
+                        </div>
                         <div className="bg-blue-600 text-white rounded font-bold px-3 py-1 min-w-max flex items-center justify-center">
                           {item.quantity}
                         </div>
                       </div>
                     </div>
+                  ) : (
+                    // Full Edit Mode
+                    <div key={item.id} className="p-3 space-y-2">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="font-bold text-slate-900 text-lg">{capitalize(item.name)}</div>
+                          <div className="text-sm text-slate-600 mt-1 font-medium">{capitalize(item.category)}</div>
+                          <div className="text-xs font-semibold text-slate-700 mt-1">Location: {location ? capitalize(location.name) : 'N/A'}</div>
+                        </div>
+                        <div className="flex gap-1 flex-shrink-0">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 w-8 p-0 text-blue-600 hover:text-blue-700 hover:bg-blue-50"
+                            onClick={() => { setTransferSourceId(item.id!); setIsTransferDialogOpen(true); }}
+                          >
+                            <ArrowRightLeft className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 w-8 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
+                            onClick={() => setDeleteConfirmId(item.id!)}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </div>
 
-                    <div className="flex items-center justify-center gap-2 bg-slate-50 rounded-lg p-3">
-                      {editingQuantityId === item.id && (
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-500 text-xs uppercase tracking-wider font-bold">Size</span>
+                          <span className="text-slate-500 text-xs uppercase tracking-wider font-bold">Quantity</span>
+                        </div>
+                        <div className="flex items-end justify-between gap-4">
+                          <span className="font-mono text-slate-700 font-bold">{capitalize(item.size || '') || 'N/A'}</span>
+                          <div className="bg-blue-600 text-white rounded font-bold px-3 py-1 min-w-max flex items-center justify-center">
+                            {item.quantity}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-center gap-2 bg-slate-50 rounded-lg p-3">
+                        {editingQuantityId === item.id && (
+                          <Button
+                            variant="destructive"
+                            size="sm"
+                            className="h-8 w-8 p-0"
+                            onClick={() => { setEditingQuantityId(undefined); setTempQuantity({...tempQuantity, [item.id]: ""}); }}
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
+                        )}
                         <Button
-                          variant="destructive"
+                          variant="outline"
                           size="sm"
                           className="h-8 w-8 p-0"
                           onClick={() => {
-                            setEditingQuantityId(undefined);
-                            setTempQuantity({...tempQuantity, [item.id]: ""});
+                            setEditingQuantityId(item.id!);
+                            setTempQuantity({...tempQuantity, [item.id]: ((parseInt(tempQuantity[item.id] || "0") || 0) - 1).toString()});
                           }}
                         >
-                          <X className="h-4 w-4" />
+                          <Minus className="h-4 w-4" />
                         </Button>
-                      )}
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-8 w-8 p-0"
-                        onClick={() => {
-                          setEditingQuantityId(item.id!);
-                          setTempQuantity({...tempQuantity, [item.id]: ((parseInt(tempQuantity[item.id] || "0") || 0) - 1).toString()});
-                        }}
-                      >
-                        <Minus className="h-4 w-4" />
-                      </Button>
-                      <Input
-                        type="number"
-                        className="w-16 h-8 text-center"
-                        placeholder="0"
-                        value={tempQuantity[item.id] || ""}
-                        onChange={(e) => {
-                          setEditingQuantityId(item.id!);
-                          setTempQuantity({...tempQuantity, [item.id]: e.target.value});
-                        }}
-                      />
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-8 w-8 p-0"
-                        onClick={() => {
-                          setEditingQuantityId(item.id!);
-                          setTempQuantity({...tempQuantity, [item.id]: ((parseInt(tempQuantity[item.id] || "0") || 0) + 1).toString()});
-                        }}
-                      >
-                        <Plus className="h-4 w-4" />
-                      </Button>
-                      {editingQuantityId === item.id && (
+                        <Input
+                          type="number"
+                          className="w-16 h-8 text-center"
+                          placeholder="0"
+                          value={tempQuantity[item.id] || ""}
+                          onChange={(e) => { setEditingQuantityId(item.id!); setTempQuantity({...tempQuantity, [item.id]: e.target.value}); }}
+                        />
                         <Button
-                          variant="default"
+                          variant="outline"
                           size="sm"
-                          className="h-8 w-8 p-0 bg-green-600 hover:bg-green-700"
+                          className="h-8 w-8 p-0"
                           onClick={() => {
-                            const delta = parseInt(tempQuantity[item.id]) || 0;
-                            handleQuantityUpdate(item.id!, delta);
-                            setEditingQuantityId(undefined);
-                            setTempQuantity({...tempQuantity, [item.id]: ""});
+                            setEditingQuantityId(item.id!);
+                            setTempQuantity({...tempQuantity, [item.id]: ((parseInt(tempQuantity[item.id] || "0") || 0) + 1).toString()});
                           }}
                         >
-                          <Check className="h-4 w-4" />
+                          <Plus className="h-4 w-4" />
                         </Button>
-                      )}
+                        {editingQuantityId === item.id && (
+                          <Button
+                            variant="default"
+                            size="sm"
+                            className="h-8 w-8 p-0 bg-green-600 hover:bg-green-700"
+                            onClick={() => {
+                              const delta = parseInt(tempQuantity[item.id]) || 0;
+                              handleQuantityUpdate(item.id!, delta);
+                              setEditingQuantityId(undefined);
+                              setTempQuantity({...tempQuantity, [item.id]: ""});
+                            }}
+                          >
+                            <Check className="h-4 w-4" />
+                          </Button>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                );
-              })}
+                  );
+                })
+              )}
             </div>
           </CardContent>
         </Card>
@@ -690,27 +387,11 @@ export default function Stock() {
         <DialogContent className="sm:max-w-[400px]">
           <DialogHeader>
             <DialogTitle>Delete Item</DialogTitle>
-            <DialogDescription>
-              Are you sure you want to delete this item? This action cannot be undone.
-            </DialogDescription>
+            <DialogDescription>Are you sure you want to delete this item? This action cannot be undone.</DialogDescription>
           </DialogHeader>
           <DialogFooter className="gap-2">
-            <Button
-              variant="outline"
-              onClick={() => setDeleteConfirmId(undefined)}
-            >
-              No, Keep It
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={() => {
-                if (deleteConfirmId) {
-                  handleDeleteItem(deleteConfirmId);
-                }
-              }}
-            >
-              Yes, Delete
-            </Button>
+            <Button variant="outline" onClick={() => setDeleteConfirmId(undefined)}>No, Keep It</Button>
+            <Button variant="destructive" onClick={() => { if (deleteConfirmId) handleDeleteItem(deleteConfirmId); }}>Yes, Delete</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -720,78 +401,42 @@ export default function Stock() {
         <DialogContent className="sm:max-w-[500px]">
           <DialogHeader>
             <DialogTitle>Add New Product</DialogTitle>
-            <DialogDescription>
-              Enter the details of the new product below.
-            </DialogDescription>
+            <DialogDescription>Enter the details of the new product below.</DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
             <div className="space-y-2">
               <Label htmlFor="name">Product Name *</Label>
-              <Input
-                id="name"
-                placeholder="Product name"
-                value={newProduct.name}
-                onChange={(e) => setNewProduct({ ...newProduct, name: e.target.value })}
-              />
+              <Input id="name" placeholder="Product name" value={newProduct.name} onChange={(e) => setNewProduct({ ...newProduct, name: e.target.value })} />
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="category">Category *</Label>
-                <Input
-                  id="category"
-                  placeholder="Category"
-                  value={newProduct.category}
-                  onChange={(e) => setNewProduct({ ...newProduct, category: e.target.value })}
-                />
+                <Input id="category" placeholder="Category" value={newProduct.category} onChange={(e) => setNewProduct({ ...newProduct, category: e.target.value })} />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="quantity">Quantity (Optional)</Label>
-                <Input
-                  id="quantity"
-                  type="number"
-                  placeholder="0"
-                  min="0"
-                  value={newProduct.quantity}
-                  onChange={(e) => setNewProduct({ ...newProduct, quantity: e.target.value })}
-                />
+                <Input id="quantity" type="number" placeholder="0" min="0" value={newProduct.quantity} onChange={(e) => setNewProduct({ ...newProduct, quantity: e.target.value })} />
               </div>
             </div>
             <div className="space-y-2">
               <Label htmlFor="size">Size (Optional)</Label>
-              <Input
-                id="size"
-                placeholder="Size"
-                value={newProduct.size}
-                onChange={(e) => setNewProduct({ ...newProduct, size: e.target.value })}
-              />
+              <Input id="size" placeholder="Size" value={newProduct.size} onChange={(e) => setNewProduct({ ...newProduct, size: e.target.value })} />
             </div>
             <div className="space-y-2">
               <Label htmlFor="location">Location (Optional)</Label>
               <Select value={newProduct.locationId} onValueChange={(value) => setNewProduct({ ...newProduct, locationId: value })}>
-                <SelectTrigger id="location">
-                  <SelectValue placeholder="Select a location" />
-                </SelectTrigger>
+                <SelectTrigger id="location"><SelectValue placeholder="Select a location" /></SelectTrigger>
                 <SelectContent>
                   {locations.map((location) => (
-                    <SelectItem key={location.id} value={location.id}>
-                      {capitalize(location.name)}
-                    </SelectItem>
+                    <SelectItem key={location.id} value={location.id}>{capitalize(location.name)}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
           </div>
           <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setIsAddDialogOpen(false)}
-              disabled={isSubmitting}
-            >
-              Cancel
-            </Button>
-            <Button onClick={handleAddProduct} disabled={isSubmitting}>
-              {isSubmitting ? "Adding..." : "Add Product"}
-            </Button>
+            <Button variant="outline" onClick={() => setIsAddDialogOpen(false)} disabled={isSubmitting}>Cancel</Button>
+            <Button onClick={handleAddProduct} disabled={isSubmitting}>{isSubmitting ? "Adding..." : "Add Product"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -801,9 +446,7 @@ export default function Stock() {
         <DialogContent className="sm:max-w-[500px]">
           <DialogHeader>
             <DialogTitle>Transfer Stock</DialogTitle>
-            <DialogDescription>
-              Transfer this stock to another location. The target location must have the same product.
-            </DialogDescription>
+            <DialogDescription>Transfer this stock to another location. The target location must have the same product.</DialogDescription>
           </DialogHeader>
           {transferSourceId && (() => {
             const sourceItem = items.find(i => i.id === transferSourceId);
@@ -817,53 +460,27 @@ export default function Stock() {
                   <p className="text-xs text-slate-600">Location: {sourceLocation ? capitalize(sourceLocation.name) : 'N/A'}</p>
                   <p className="text-xs text-slate-600">Available: <span className="font-semibold">{sourceItem.quantity}</span> units</p>
                 </div>
-
                 <div className="space-y-2">
                   <Label htmlFor="target-location">Transfer To Location *</Label>
                   <Select value={transferData.targetLocationId} onValueChange={(value) => setTransferData({ ...transferData, targetLocationId: value })}>
-                    <SelectTrigger id="target-location">
-                      <SelectValue placeholder="Select target location" />
-                    </SelectTrigger>
+                    <SelectTrigger id="target-location"><SelectValue placeholder="Select target location" /></SelectTrigger>
                     <SelectContent>
-                      {locations
-                        .filter(loc => loc.id !== sourceItem.locationId)
-                        .map((location) => (
-                          <SelectItem key={location.id} value={location.id}>
-                            {capitalize(location.name)}
-                          </SelectItem>
-                        ))}
+                      {locations.filter(loc => loc.id !== sourceItem.locationId).map((location) => (
+                        <SelectItem key={location.id} value={location.id}>{capitalize(location.name)}</SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>
-
                 <div className="space-y-2">
                   <Label htmlFor="transfer-quantity">Quantity to Transfer *</Label>
-                  <Input
-                    id="transfer-quantity"
-                    type="number"
-                    placeholder="0"
-                    max={sourceItem.quantity}
-                    value={transferData.quantity}
-                    onChange={(e) => setTransferData({ ...transferData, quantity: e.target.value })}
-                  />
+                  <Input id="transfer-quantity" type="number" placeholder="0" max={sourceItem.quantity} value={transferData.quantity} onChange={(e) => setTransferData({ ...transferData, quantity: e.target.value })} />
                 </div>
               </div>
             );
           })()}
           <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setIsTransferDialogOpen(false);
-                setTransferSourceId(undefined);
-                setTransferData({ targetLocationId: "", quantity: "" });
-              }}
-            >
-              Cancel
-            </Button>
-            <Button onClick={handleTransferStock}>
-              Transfer
-            </Button>
+            <Button variant="outline" onClick={() => { setIsTransferDialogOpen(false); setTransferSourceId(undefined); setTransferData({ targetLocationId: "", quantity: "" }); }}>Cancel</Button>
+            <Button onClick={handleTransferStock}>Transfer</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
