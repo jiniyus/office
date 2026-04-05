@@ -40,7 +40,7 @@ export default function LocationPage() {
   const filteredLocations = useMemo(() => {
     return locations.filter(location =>
       location.name.toLowerCase().includes(searchTerm.toLowerCase())
-    );
+    ).sort((a, b) => a.name.localeCompare(b.name));
   }, [locations, searchTerm]);
 
   const handleDeleteLocation = async (locationId: string) => {

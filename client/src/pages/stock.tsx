@@ -71,7 +71,7 @@ export default function Stock() {
       const matchesCategory = selectedCategories.length === 0 || 
         selectedCategories.includes(item.category);
       return matchesSearch && matchesCategory;
-    });
+    }).sort((a, b) => a.name.localeCompare(b.name));
   }, [items, searchTerm, selectedCategories]);
 
   const handleQuantityUpdate = async (itemId: string, delta: number) => {
