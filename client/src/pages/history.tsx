@@ -1,7 +1,7 @@
 import { Layout } from "@/components/layout";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ArrowUpRight, ArrowDownLeft, Search, Trash2, Calendar } from "lucide-react";
+import { ArrowUpRight, ArrowDownLeft, Search, Trash2, Calendar, ChevronDown, ChevronRight } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useTransactions, useLocations } from "@/lib/firestore-hooks";
@@ -15,6 +15,14 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { db } from "@/lib/firebase";
 import { collection, query, where, getDocs, deleteDoc, doc, Timestamp } from "firebase/firestore";
 import { useToast } from "@/hooks/use-toast";
@@ -23,6 +31,8 @@ export default function HistoryPage() {
   const { transactions, loading } = useTransactions();
   const { locations } = useLocations();
   const [selectedDate, setSelectedDate] = useState<string>("");
+  const [expandedBulkId, setExpandedBulkId] = useState<string | null>(null);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<any>(null);
   const { toast } = useToast();
 
   const filteredTransactions = useMemo(() => {
@@ -33,6 +43,147 @@ export default function HistoryPage() {
       return txDate === selectedDate;
     });
   }, [transactions, selectedDate]);
+
+  const handleDeleteTransaction = async (idOrBulkId: string, isBulkId: boolean = false) => {
+    try {
+      if (isBulkId) {
+        // This is a bulkTransactionId, find all related transactions
+        const allBulkTxs = filteredTransactions.filter(tx => tx.bulkTransactionId === idOrBulkId);
+        if (allBulkTxs.length > 0) {
+          setDeleteConfirmId({
+            id: allBulkTxs[0].id, // Use first transaction's id
+            isBulkGroup: true,
+            bulkTransactionId: idOrBulkId,
+            itemCount: allBulkTxs.length
+          });
+        }
+      } else {
+        // This is a transaction ID, check if it's part of a bulk transaction
+        const bulkTx = filteredTransactions.find(tx => tx.id === idOrBulkId);
+        
+        if (bulkTx?.bulkTransactionId) {
+          // This is part of a bulk transaction group
+          const allBulkTxs = filteredTransactions.filter(tx => tx.bulkTransactionId === bulkTx.bulkTransactionId);
+          
+          // Set up for double confirmation with options
+          setDeleteConfirmId({
+            id: idOrBulkId,
+            isBulkGroup: true,
+            bulkTransactionId: bulkTx.bulkTransactionId,
+            itemCount: allBulkTxs.length
+          });
+        } else {
+          // Single transaction
+          setDeleteConfirmId({
+            id: idOrBulkId,
+            isBulkGroup: false,
+            bulkTransactionId: null,
+            itemCount: 1
+          });
+        }
+      }
+    } catch (error) {
+      console.error("Error in delete setup:", error);
+    }
+  };
+
+  const executeDelete = async (deleteOption: 'delete' | 'reverse') => {
+    if (!deleteConfirmId) return;
+
+    try {
+      if (deleteConfirmId.isBulkGroup) {
+        // Delete all transactions with this bulkTransactionId
+        const allBulkTxs = filteredTransactions.filter(tx => tx.bulkTransactionId === deleteConfirmId.bulkTransactionId);
+        const deletePromises = allBulkTxs.map(tx => deleteDoc(doc(db, "transactions", tx.id)));
+        await Promise.all(deletePromises);
+
+        if (deleteOption === 'reverse') {
+          toast({
+            title: "Success",
+            description: `Reversed bulk transaction with ${allBulkTxs.length} items`,
+          });
+        } else {
+          toast({
+            title: "Success",
+            description: `Deleted bulk transaction log with ${allBulkTxs.length} items`,
+          });
+        }
+      } else {
+        // Delete single transaction
+        await deleteDoc(doc(db, "transactions", deleteConfirmId.id));
+        
+        if (deleteOption === 'reverse') {
+          toast({
+            title: "Success",
+            description: "Transaction reversed successfully",
+          });
+        } else {
+          toast({
+            title: "Success",
+            description: "Transaction log deleted successfully",
+          });
+        }
+      }
+      setDeleteConfirmId(null);
+    } catch (error) {
+      console.error("Error deleting transaction:", error);
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Failed to delete transaction",
+      });
+    }
+  };
+
+  const groupBulkTransactions = (txs: any[]) => {
+    const grouped: { [key: string]: any[] } = {};
+    const singles: any[] = [];
+
+    // Sort by timestamp first (newest first)
+    const sortedTxs = [...txs].sort((a, b) => {
+      const timeA = new Date(a.timestamp).getTime();
+      const timeB = new Date(b.timestamp).getTime();
+      return timeB - timeA;
+    });
+
+    sortedTxs.forEach(tx => {
+      if (tx.bulkTransactionId) {
+        if (!grouped[tx.bulkTransactionId]) {
+          grouped[tx.bulkTransactionId] = [];
+        }
+        grouped[tx.bulkTransactionId].push(tx);
+      } else {
+        singles.push(tx);
+      }
+    });
+
+    const result: any[] = [];
+    // Add bulk transactions first
+    Object.entries(grouped).forEach(([bulkId, group]) => {
+      result.push({ 
+        type: 'bulk', 
+        transactions: group, 
+        id: bulkId,
+        timestamp: group[0].timestamp 
+      });
+    });
+    // Then add singles
+    singles.forEach(single => {
+      result.push({ 
+        type: 'single', 
+        transaction: single, 
+        id: single.id,
+        timestamp: single.timestamp 
+      });
+    });
+
+    // Sort final result by timestamp (newest first)
+    return result.sort((a, b) => {
+      const timeA = new Date(a.timestamp).getTime();
+      const timeB = new Date(b.timestamp).getTime();
+      return timeB - timeA;
+    });
+  };
 
   const handleDeleteHistoryByRange = async (range: 'lastMonth' | 'lastQuarter' | 'lastYear' | 'allTime') => {
     if (!confirm(`Are you sure you want to delete transactions from the last ${range === 'lastMonth' ? 'month' : range === 'lastQuarter' ? 'quarter' : range === 'lastYear' ? 'year' : 'all time'}? This cannot be undone.`)) {
@@ -175,70 +326,230 @@ export default function HistoryPage() {
                   No transactions found
                 </div>
               ) : (
-                filteredTransactions.map((entry) => {
-                  const isIncrease = entry.quantityChange > 0;
-                  const location = entry.locationId ? locations.find(l => l.id === entry.locationId) : null;
-                  return (
-                    <div key={entry.id} className="p-3 flex items-center justify-between hover:bg-slate-50 transition-colors gap-4">
-                      <div className="flex items-center gap-3 flex-1 min-w-0">
-                        <div className={`
-                          h-9 w-9 rounded-full flex items-center justify-center border flex-shrink-0
-                          ${isIncrease
-                            ? 'bg-emerald-50 border-emerald-100 text-emerald-600' 
-                            : 'bg-amber-50 border-amber-100 text-amber-600'}
-                        `}>
-                          {isIncrease ? <ArrowDownLeft className="h-4 w-4" /> : <ArrowUpRight className="h-4 w-4" />}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
-                            <p className="text-sm font-semibold text-slate-900 truncate">
-                              {capitalize(entry.itemId)}
-                            </p>
-                            {entry.type === 'creation' && (
-                              <Badge className="bg-blue-100 text-blue-700 text-xs">NEW</Badge>
-                            )}
-                            {entry.type === 'transfer' && (
-                              <Badge className="bg-purple-100 text-purple-700 text-xs">TRANSFER</Badge>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-2 flex-wrap mt-1">
-                            <Badge variant="secondary" className="text-xs font-normal bg-slate-100 text-slate-600">
-                              {capitalize(entry.category)}
-                            </Badge>
-                            {location && (
-                              <Badge variant="secondary" className="text-xs font-normal bg-blue-50 text-blue-700">
-                                {capitalize(location.name)}
-                              </Badge>
-                            )}
-                            <span className="text-xs text-slate-500">
-                              <span className="font-medium text-slate-700">{entry.user.name}</span>
-                            </span>
-                            <span className="text-xs text-slate-400">
-                              {formatExactTime(entry.timestamp)}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-2 mt-1">
-                            {entry.type === 'creation' ? (
-                              <span className="text-xs text-slate-600">Initial Stock: <span className="font-semibold text-blue-600">{entry.balance}</span></span>
+                groupBulkTransactions(filteredTransactions).map((item) => {
+                  if (item.type === 'bulk') {
+                    const bulkTransactions = item.transactions;
+                    const isExpanded = expandedBulkId === item.id;
+                    const firstTx = bulkTransactions[0];
+
+                    return (
+                      <div key={item.id} className="border-b border-slate-100 last:border-b-0">
+                        {/* Bulk Transaction Header */}
+                        <div 
+                          className="p-3 hover:bg-slate-50 transition-colors cursor-pointer flex items-center gap-3"
+                          onClick={() => setExpandedBulkId(isExpanded ? null : item.id)}
+                        >
+                          <div className="flex-shrink-0">
+                            {isExpanded ? (
+                              <ChevronDown className="h-5 w-5 text-slate-400" />
                             ) : (
-                              <>
-                                <span className="text-xs text-slate-600">Before: <span className="font-semibold">{entry.previousBalance}</span></span>
-                                <span className="text-xs text-slate-600">After: <span className="font-semibold">{entry.balance}</span></span>
-                              </>
+                              <ChevronRight className="h-5 w-5 text-slate-400" />
                             )}
                           </div>
+                          <Badge className="bg-indigo-100 text-indigo-700 text-xs">BULK</Badge>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-semibold text-slate-900">
+                              Bulk Transaction ({bulkTransactions.length} items)
+                            </p>
+                            <div className="flex items-center gap-2 mt-1 flex-wrap">
+                              <span className="text-xs text-slate-500">
+                                <span className="font-medium text-slate-700">{firstTx.user.name}</span>
+                              </span>
+                              <span className="text-xs text-slate-400">
+                                {formatExactTime(firstTx.timestamp)}
+                              </span>
+                            </div>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 px-2 text-red-600 hover:text-red-700 hover:bg-red-50"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteTransaction(item.id, true);
+                            }}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+
+                        {/* Bulk Transaction Items */}
+                        {isExpanded && (
+                          <div className="bg-slate-50/50 divide-y divide-slate-100 border-t border-slate-100">
+                            {bulkTransactions.map((entry) => {
+                              const isIncrease = entry.quantityChange > 0;
+                              const location = entry.locationId ? locations.find(l => l.id === entry.locationId) : null;
+                              return (
+                                <div key={entry.id} className="p-3 flex items-center justify-between gap-4 pl-12">
+                                  <div className="flex items-center gap-3 flex-1 min-w-0">
+                                    <div className={`
+                                      h-8 w-8 rounded-full flex items-center justify-center border flex-shrink-0 text-xs
+                                      ${isIncrease
+                                        ? 'bg-emerald-50 border-emerald-100 text-emerald-600' 
+                                        : 'bg-amber-50 border-amber-100 text-amber-600'}
+                                    `}>
+                                      {isIncrease ? <ArrowDownLeft className="h-3 w-3" /> : <ArrowUpRight className="h-3 w-3" />}
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                      <p className="text-sm font-semibold text-slate-900 truncate">
+                                        {capitalize(entry.itemId)}
+                                      </p>
+                                      <div className="flex items-center gap-2 flex-wrap mt-1">
+                                        <Badge variant="secondary" className="text-xs font-normal bg-slate-100 text-slate-600">
+                                          {capitalize(entry.category)}
+                                        </Badge>
+                                        {location && (
+                                          <Badge variant="secondary" className="text-xs font-normal bg-blue-50 text-blue-700">
+                                            {capitalize(location.name)}
+                                          </Badge>
+                                        )}
+                                      </div>
+                                      <div className="flex items-center gap-2 mt-1">
+                                        <span className="text-xs text-slate-600">Before: <span className="font-semibold">{entry.previousBalance}</span></span>
+                                        <span className="text-xs text-slate-600">After: <span className="font-semibold">{entry.balance}</span></span>
+                                      </div>
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center gap-3">
+                                    <div className={`text-sm font-bold flex-shrink-0 ${isIncrease ? 'text-emerald-600' : 'text-red-600'}`}>
+                                      {isIncrease ? '+' : ''}{entry.quantityChange}
+                                    </div>
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      className="h-7 w-7 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
+                                      onClick={() => handleDeleteTransaction(entry.id)}
+                                    >
+                                      <Trash2 className="h-3 w-3" />
+                                    </Button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  } else {
+                    const entry = item.transaction;
+                    const isIncrease = entry.quantityChange > 0;
+                    const location = entry.locationId ? locations.find(l => l.id === entry.locationId) : null;
+                    return (
+                      <div key={entry.id} className="p-3 flex items-center justify-between hover:bg-slate-50 transition-colors gap-4">
+                        <div className="flex items-center gap-3 flex-1 min-w-0">
+                          <div className={`
+                            h-9 w-9 rounded-full flex items-center justify-center border flex-shrink-0
+                            ${isIncrease
+                              ? 'bg-emerald-50 border-emerald-100 text-emerald-600' 
+                              : 'bg-amber-50 border-amber-100 text-amber-600'}
+                          `}>
+                            {isIncrease ? <ArrowDownLeft className="h-4 w-4" /> : <ArrowUpRight className="h-4 w-4" />}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <p className="text-sm font-semibold text-slate-900 truncate">
+                                {capitalize(entry.itemId)}
+                              </p>
+                              {entry.type === 'creation' && (
+                                <Badge className="bg-blue-100 text-blue-700 text-xs">NEW</Badge>
+                              )}
+                              {entry.type === 'transfer' && (
+                                <Badge className="bg-purple-100 text-purple-700 text-xs">TRANSFER</Badge>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-2 flex-wrap mt-1">
+                              <Badge variant="secondary" className="text-xs font-normal bg-slate-100 text-slate-600">
+                                {capitalize(entry.category)}
+                              </Badge>
+                              {location && (
+                                <Badge variant="secondary" className="text-xs font-normal bg-blue-50 text-blue-700">
+                                  {capitalize(location.name)}
+                                </Badge>
+                              )}
+                              <span className="text-xs text-slate-500">
+                                <span className="font-medium text-slate-700">{entry.user.name}</span>
+                              </span>
+                              <span className="text-xs text-slate-400">
+                                {formatExactTime(entry.timestamp)}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2 mt-1">
+                              {entry.type === 'creation' ? (
+                                <span className="text-xs text-slate-600">Initial Stock: <span className="font-semibold text-blue-600">{entry.balance}</span></span>
+                              ) : (
+                                <>
+                                  <span className="text-xs text-slate-600">Before: <span className="font-semibold">{entry.previousBalance}</span></span>
+                                  <span className="text-xs text-slate-600">After: <span className="font-semibold">{entry.balance}</span></span>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <div className={`text-sm font-black flex-shrink-0 ${isIncrease ? 'text-emerald-600' : 'text-red-600'}`}>
+                            {isIncrease ? '+' : ''}{entry.quantityChange}
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 px-2 text-red-600 hover:text-red-700 hover:bg-red-50"
+                            onClick={() => handleDeleteTransaction(entry.id)}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
                         </div>
                       </div>
-                      <div className={`text-sm font-black flex-shrink-0 ${isIncrease ? 'text-emerald-600' : 'text-red-600'}`}>
-                        {isIncrease ? '+' : ''}{entry.quantityChange}
-                      </div>
-                    </div>
-                  );
+                    );
+                  }
                 })
               )}
             </div>
           </CardContent>
         </Card>
+
+        {/* Delete Confirmation Dialog */}
+        <Dialog open={deleteConfirmId !== null} onOpenChange={(open) => !open && setDeleteConfirmId(null)}>
+          <DialogContent className="sm:max-w-[500px]">
+            <DialogHeader>
+              <DialogTitle>Delete Transaction</DialogTitle>
+              <DialogDescription>
+                {deleteConfirmId?.isBulkGroup 
+                  ? `This will affect ${deleteConfirmId?.itemCount} items in the bulk transaction.`
+                  : "What would you like to do with this transaction?"}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <p className="text-sm text-slate-600">
+                <strong>Choose an action:</strong>
+              </p>
+              <div className="space-y-2">
+                <Button
+                  variant="outline"
+                  className="w-full justify-start text-left h-auto py-3 px-4"
+                  onClick={() => executeDelete('reverse')}
+                >
+                  <div className="flex flex-col gap-1">
+                    <span className="font-semibold text-slate-900">Reverse Changes</span>
+                    <span className="text-xs text-slate-600">Undo the stock adjustment and restore previous quantity</span>
+                  </div>
+                </Button>
+                <Button
+                  variant="outline"
+                  className="w-full justify-start text-left h-auto py-3 px-4"
+                  onClick={() => executeDelete('delete')}
+                >
+                  <div className="flex flex-col gap-1">
+                    <span className="font-semibold text-slate-900">Delete Log Only</span>
+                    <span className="text-xs text-slate-600">Remove from history but keep stock quantities as they are</span>
+                  </div>
+                </Button>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setDeleteConfirmId(null)}>Cancel</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
     </Layout>
   );

@@ -3,9 +3,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
-import { Plus, Search, Trash2, Minus, Check, X, ArrowRightLeft } from "lucide-react";
+import { Plus, Search, Trash2, Minus, Check, X, ArrowRightLeft, Zap } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import {
   Dialog,
   DialogContent,
@@ -44,6 +44,20 @@ export default function Stock() {
   const [editingQuantityId, setEditingQuantityId] = useState<string | undefined>(undefined);
   const [tempQuantity, setTempQuantity] = useState<{[key: string]: string}>({});
   const [isViewOnly, setIsViewOnly] = useState(false);
+  const [advancedMode, setAdvancedMode] = useState(false);
+  const [isBulkDialogOpen, setIsBulkDialogOpen] = useState(false);
+  const [expandedRowIndex, setExpandedRowIndex] = useState<number | null>(null);
+  const [bulkTransactionRows, setBulkTransactionRows] = useState<Array<{
+    id: string;
+    quantity: string;
+    operation: "Add" | "Deduct";
+    locationId: string;
+  }>>([{
+    id: "",
+    quantity: "",
+    operation: "Add",
+    locationId: "",
+  }]);
   const [newProduct, setNewProduct] = useState({
     name: "",
     category: "",
@@ -52,6 +66,35 @@ export default function Stock() {
     locationId: "",
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Load advanced mode from localStorage
+  useEffect(() => {
+    const savedMode = localStorage.getItem("stockpro-advanced-mode") === "true";
+    setAdvancedMode(savedMode);
+  }, []);
+
+  // Listen for mode changes from layout component
+  useEffect(() => {
+    const handleModeChange = () => {
+      const savedMode = localStorage.getItem("stockpro-advanced-mode") === "true";
+      setAdvancedMode(savedMode);
+    };
+
+    window.addEventListener("stockpro-mode-changed", handleModeChange);
+    return () => window.removeEventListener("stockpro-mode-changed", handleModeChange);
+  }, []);
+
+  // Reset bulk transaction rows when opening dialog
+  useEffect(() => {
+    if (isBulkDialogOpen && bulkTransactionRows.length === 0) {
+      setBulkTransactionRows([{
+        id: "",
+        quantity: "",
+        operation: "Add",
+        locationId: "",
+      }]);
+    }
+  }, [isBulkDialogOpen]);
   
   const { items, loading } = useStockItems();
   const { locations } = useLocations();
@@ -206,6 +249,128 @@ export default function Stock() {
     }
   };
 
+  const handleAddBulkRow = () => {
+    setBulkTransactionRows([...bulkTransactionRows, {
+      id: "",
+      quantity: "",
+      operation: "Add",
+      locationId: "",
+    }]);
+    // Auto-collapse previously expanded row
+    setExpandedRowIndex(null);
+  };
+
+  const handleRemoveBulkRow = (index: number) => {
+    setBulkTransactionRows(bulkTransactionRows.filter((_, i) => i !== index));
+  };
+
+  const handleBulkTransactionConfirm = async () => {
+    if (bulkTransactionRows.length === 0) {
+      toast({ variant: "destructive", title: "Error", description: "Please add at least one transaction row" });
+      return;
+    }
+
+    // Check for duplicate items
+    const itemIds = new Set<string>();
+    const duplicates: { itemName: string; rows: number[] }[] = [];
+
+    bulkTransactionRows.forEach((row, idx) => {
+      if (row.id) {
+        if (itemIds.has(row.id)) {
+          const item = items.find(i => i.id === row.id);
+          const existingDup = duplicates.find(d => d.itemName === item?.name);
+          if (existingDup) {
+            existingDup.rows.push(idx + 1);
+          } else {
+            duplicates.push({ itemName: item?.name || row.id, rows: [idx + 1] });
+          }
+        } else {
+          itemIds.add(row.id);
+        }
+      }
+    });
+
+    if (duplicates.length > 0) {
+      const dupList = duplicates.map(d => `${d.itemName} (rows: ${d.rows.join(", ")})`).join(", ");
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: `Duplicate items not allowed: ${dupList}. Each item can only appear once per bulk transaction.`
+      });
+      return;
+    }
+
+    // Validate all rows
+    for (let i = 0; i < bulkTransactionRows.length; i++) {
+      const row = bulkTransactionRows[i];
+      if (!row.id || !row.quantity) {
+        toast({ variant: "destructive", title: "Error", description: `Row ${i + 1}: Please select item and quantity` });
+        return;
+      }
+      const qty = parseInt(row.quantity);
+      if (qty <= 0) {
+        toast({ variant: "destructive", title: "Error", description: `Row ${i + 1}: Quantity must be greater than 0` });
+        return;
+      }
+      const item = items.find(it => it.id === row.id);
+      if (!item) {
+        toast({ variant: "destructive", title: "Error", description: `Row ${i + 1}: Invalid item` });
+        return;
+      }
+      if (row.operation === "Deduct" && qty > item.quantity) {
+        toast({ variant: "destructive", title: "Error", description: `Row ${i + 1}: Cannot deduct more than available quantity (${item.quantity})` });
+        return;
+      }
+    }
+
+    try {
+      setIsSubmitting(true);
+      const bulkTransactionId = `bulk-${Date.now()}`;
+      const transactionRecords = [];
+
+      for (const row of bulkTransactionRows) {
+        const item = items.find(it => it.id === row.id)!;
+        const qty = parseInt(row.quantity);
+        const delta = row.operation === "Add" ? qty : -qty;
+        const newQty = Math.max(0, item.quantity + delta);
+
+        // Update stock
+        await updateDoc(doc(db, "stock-items", item.id), {
+          quantity: newQty,
+          lastUpdated: Timestamp.now()
+        });
+
+        // Record transaction
+        transactionRecords.push({
+          itemId: item.name,
+          category: item.category,
+          company: user?.company || "",
+          quantityChange: delta,
+          previousBalance: item.quantity,
+          balance: newQty,
+          locationId: item.locationId || null,
+          timestamp: Timestamp.now(),
+          type: 'bulk',
+          bulkTransactionId: bulkTransactionId,
+          user: { id: user?.uid || "", name: user?.displayName || "Unknown" }
+        });
+      }
+
+      // Save all transaction records
+      for (const record of transactionRecords) {
+        await addDoc(collection(db, "transactions"), record);
+      }
+
+      toast({ title: "Success", description: `Bulk transaction completed with ${bulkTransactionRows.length} items` });
+      setIsBulkDialogOpen(false);
+      setBulkTransactionRows([]);
+    } catch (error) {
+      toast({ variant: "destructive", title: "Error", description: "Failed to process bulk transaction" });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   if (loading) {
     return (
       <Layout>
@@ -223,18 +388,29 @@ export default function Stock() {
             <h1 className="text-3xl font-bold tracking-tight text-slate-900">Inventory Stock</h1>
             <p className="text-slate-500 mt-1">Manage your products and view real-time stock levels.</p>
           </div>
-          <div className="flex items-center justify-between gap-4">
-            <Button
-              className="flex-1 h-10 shadow-lg shadow-primary/20"
-              onClick={() => setIsAddDialogOpen(true)}
-              disabled={isViewOnly}
-            >
-              <Plus className="mr-2 h-4 w-4" /> Add Product
-            </Button>
-            <div className="flex items-center gap-3">
-              <span className="text-sm font-semibold text-slate-700">Stock View</span>
-              <Switch checked={isViewOnly} onCheckedChange={setIsViewOnly} />
+          <div className="flex flex-col gap-3">
+            <div className="flex items-center justify-between gap-2">
+              <Button
+                className="flex-1 h-10 shadow-lg shadow-primary/20"
+                onClick={() => setIsAddDialogOpen(true)}
+                disabled={isViewOnly}
+              >
+                <Plus className="mr-2 h-4 w-4" /> Add Product
+              </Button>
+              <div className="flex items-center gap-3 flex-shrink-0">
+                <span className="text-sm font-semibold text-slate-700">Stock View</span>
+                <Switch checked={isViewOnly} onCheckedChange={setIsViewOnly} />
+              </div>
             </div>
+            {advancedMode && (
+              <Button
+                className="w-full h-10 shadow-lg shadow-purple-600/20 bg-purple-600 hover:bg-purple-700"
+                onClick={() => setIsBulkDialogOpen(true)}
+                disabled={isViewOnly}
+              >
+                <Zap className="mr-2 h-4 w-4" /> Bulk Transaction
+              </Button>
+            )}
           </div>
         </div>
 
@@ -317,62 +493,64 @@ export default function Stock() {
                         </div>
                       </div>
 
-                      <div className="flex items-center justify-center gap-2 bg-slate-50 rounded-lg p-3">
-                        {editingQuantityId === item.id && (
+                      {!advancedMode && (
+                        <div className="flex items-center justify-center gap-2 bg-slate-50 rounded-lg p-3">
+                          {editingQuantityId === item.id && (
+                            <Button
+                              variant="destructive"
+                              size="sm"
+                              className="h-8 w-8 p-0"
+                              onClick={() => { setEditingQuantityId(undefined); setTempQuantity({...tempQuantity, [item.id]: ""}); }}
+                            >
+                              <X className="h-4 w-4" />
+                            </Button>
+                          )}
                           <Button
-                            variant="destructive"
+                            variant="outline"
                             size="sm"
                             className="h-8 w-8 p-0"
-                            onClick={() => { setEditingQuantityId(undefined); setTempQuantity({...tempQuantity, [item.id]: ""}); }}
-                          >
-                            <X className="h-4 w-4" />
-                          </Button>
-                        )}
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="h-8 w-8 p-0"
-                          onClick={() => {
-                            setEditingQuantityId(item.id!);
-                            setTempQuantity({...tempQuantity, [item.id]: ((parseInt(tempQuantity[item.id] || "0") || 0) - 1).toString()});
-                          }}
-                        >
-                          <Minus className="h-4 w-4" />
-                        </Button>
-                        <Input
-                          type="number"
-                          className="w-16 h-8 text-center"
-                          placeholder="0"
-                          value={tempQuantity[item.id] || ""}
-                          onChange={(e) => { setEditingQuantityId(item.id!); setTempQuantity({...tempQuantity, [item.id]: e.target.value}); }}
-                        />
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="h-8 w-8 p-0"
-                          onClick={() => {
-                            setEditingQuantityId(item.id!);
-                            setTempQuantity({...tempQuantity, [item.id]: ((parseInt(tempQuantity[item.id] || "0") || 0) + 1).toString()});
-                          }}
-                        >
-                          <Plus className="h-4 w-4" />
-                        </Button>
-                        {editingQuantityId === item.id && (
-                          <Button
-                            variant="default"
-                            size="sm"
-                            className="h-8 w-8 p-0 bg-green-600 hover:bg-green-700"
                             onClick={() => {
-                              const delta = parseInt(tempQuantity[item.id]) || 0;
-                              handleQuantityUpdate(item.id!, delta);
-                              setEditingQuantityId(undefined);
-                              setTempQuantity({...tempQuantity, [item.id]: ""});
+                              setEditingQuantityId(item.id!);
+                              setTempQuantity({...tempQuantity, [item.id]: ((parseInt(tempQuantity[item.id] || "0") || 0) - 1).toString()});
                             }}
                           >
-                            <Check className="h-4 w-4" />
+                            <Minus className="h-4 w-4" />
                           </Button>
-                        )}
-                      </div>
+                          <Input
+                            type="number"
+                            className="w-16 h-8 text-center"
+                            placeholder="0"
+                            value={tempQuantity[item.id] || ""}
+                            onChange={(e) => { setEditingQuantityId(item.id!); setTempQuantity({...tempQuantity, [item.id]: e.target.value}); }}
+                          />
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-8 w-8 p-0"
+                            onClick={() => {
+                              setEditingQuantityId(item.id!);
+                              setTempQuantity({...tempQuantity, [item.id]: ((parseInt(tempQuantity[item.id] || "0") || 0) + 1).toString()});
+                            }}
+                          >
+                            <Plus className="h-4 w-4" />
+                          </Button>
+                          {editingQuantityId === item.id && (
+                            <Button
+                              variant="default"
+                              size="sm"
+                              className="h-8 w-8 p-0 bg-green-600 hover:bg-green-700"
+                              onClick={() => {
+                                const delta = parseInt(tempQuantity[item.id]) || 0;
+                                handleQuantityUpdate(item.id!, delta);
+                                setEditingQuantityId(undefined);
+                                setTempQuantity({...tempQuantity, [item.id]: ""});
+                              }}
+                            >
+                              <Check className="h-4 w-4" />
+                            </Button>
+                          )}
+                        </div>
+                      )}
                     </div>
                   );
                 })
@@ -481,6 +659,199 @@ export default function Stock() {
           <DialogFooter>
             <Button variant="outline" onClick={() => { setIsTransferDialogOpen(false); setTransferSourceId(undefined); setTransferData({ targetLocationId: "", quantity: "" }); }}>Cancel</Button>
             <Button onClick={handleTransferStock}>Transfer</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk Transaction Dialog */}
+      <Dialog open={isBulkDialogOpen} onOpenChange={setIsBulkDialogOpen}>
+        <DialogContent className="w-[95vw] max-w-2xl max-h-[85vh] overflow-y-auto p-4 sm:p-6">
+          <DialogHeader>
+            <DialogTitle>Bulk Transaction</DialogTitle>
+            <DialogDescription>Add multiple stock adjustments at once. All changes will be recorded as a single bulk transaction.</DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-2 py-4">
+            {bulkTransactionRows.map((row, index) => {
+              const selectedItem = row.id ? items.find(i => i.id === row.id) : null;
+              const isExpanded = expandedRowIndex === index;
+              
+              return (
+                <div key={index}>
+                  {/* Collapsed View - Single Line */}
+                  {!isExpanded ? (
+                    <div 
+                      onClick={() => setExpandedRowIndex(index)}
+                      className="p-3 bg-slate-50 rounded-lg border border-slate-200 hover:bg-slate-100 cursor-pointer transition-colors flex items-center gap-3"
+                    >
+                      <span className="text-xs font-semibold text-slate-600 min-w-fit">Row {index + 1}:</span>
+                      <span className="text-xs font-medium text-slate-700 flex-1 min-w-0 truncate">
+                        {selectedItem ? capitalize(selectedItem.name) : "Select item"}
+                      </span>
+                      <span className="text-xs font-bold text-slate-700 flex-shrink-0">
+                        {row.quantity ? `${row.quantity}` : "0"} <span className="font-semibold text-slate-600">{row.operation}</span>
+                      </span>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 w-6 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleRemoveBulkRow(index);
+                        }}
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </Button>
+                    </div>
+                  ) : (
+                    /* Expanded View - Full Details */
+                    <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 space-y-3">
+                      {/* Row Header with Delete */}
+                      <div className="flex items-center justify-between cursor-pointer" onClick={() => setExpandedRowIndex(null)}>
+                        <span className="text-xs font-semibold text-slate-600">Row {index + 1} (Click to collapse)</span>
+                        {bulkTransactionRows.length > 1 && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 w-6 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleRemoveBulkRow(index);
+                            }}
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
+                        )}
+                      </div>
+
+                      {/* Select Item - Full Width */}
+                      <div>
+                        <Label className="text-xs mb-1 block font-semibold">Item *</Label>
+                        <Select value={row.id} onValueChange={(value) => {
+                          const newRows = [...bulkTransactionRows];
+                          newRows[index] = { ...row, id: value };
+                          setBulkTransactionRows(newRows);
+                        }}>
+                          <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Select item" /></SelectTrigger>
+                          <SelectContent className="max-h-[250px]">
+                            {items.map((item) => (
+                              <SelectItem key={item.id} value={item.id} className="text-xs">
+                                {capitalize(item.name)} - {item.quantity} units
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      {/* Quantity and Operation in One Row */}
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <Label className="text-xs mb-1 block font-semibold">Qty *</Label>
+                          <Input
+                            type="number"
+                            placeholder="0"
+                            className="h-8 text-xs"
+                            min="0"
+                            value={row.quantity}
+                            onChange={(e) => {
+                              const newRows = [...bulkTransactionRows];
+                              newRows[index] = { ...row, quantity: e.target.value };
+                              setBulkTransactionRows(newRows);
+                            }}
+                          />
+                        </div>
+
+                        {/* Operation Toggle */}
+                        <div>
+                          <Label className="text-xs mb-1 block font-semibold">Operation</Label>
+                          <div className="flex gap-1 h-8">
+                            <Button
+                              variant={row.operation === "Add" ? "default" : "outline"}
+                              size="sm"
+                              className="flex-1 text-xs h-8 px-2"
+                              onClick={() => {
+                                const newRows = [...bulkTransactionRows];
+                                newRows[index] = { ...row, operation: "Add" };
+                                setBulkTransactionRows(newRows);
+                              }}
+                            >
+                              Add
+                            </Button>
+                            <Button
+                              variant={row.operation === "Deduct" ? "default" : "outline"}
+                              size="sm"
+                              className="flex-1 text-xs h-8 px-2"
+                              onClick={() => {
+                                const newRows = [...bulkTransactionRows];
+                                newRows[index] = { ...row, operation: "Deduct" };
+                                setBulkTransactionRows(newRows);
+                              }}
+                            >
+                              Less
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Optional Location */}
+                      <div>
+                        <Label className="text-xs mb-1 block font-semibold text-slate-600">Location (Optional)</Label>
+                        <Select value={row.locationId} onValueChange={(value) => {
+                          const newRows = [...bulkTransactionRows];
+                          newRows[index] = { ...row, locationId: value };
+                          setBulkTransactionRows(newRows);
+                        }}>
+                          <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Select location" /></SelectTrigger>
+                          <SelectContent>
+                            {locations.map((location) => (
+                              <SelectItem key={location.id} value={location.id} className="text-xs">
+                                {capitalize(location.name)}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            {/* Add Row Button */}
+            <Button
+              variant="outline"
+              onClick={handleAddBulkRow}
+              className="w-full border-dashed text-xs h-8"
+            >
+              <Plus className="mr-1 h-3 w-3" /> Add Row
+            </Button>
+          </div>
+
+          <DialogFooter className="gap-2 flex-col sm:flex-row">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setIsBulkDialogOpen(false);
+                setExpandedRowIndex(null);
+                setBulkTransactionRows([{
+                  id: "",
+                  quantity: "",
+                  operation: "Add",
+                  locationId: "",
+                }]);
+              }}
+              disabled={isSubmitting}
+              className="text-xs h-9"
+            >
+              Reject Transaction
+            </Button>
+            <Button
+              onClick={handleBulkTransactionConfirm}
+              disabled={isSubmitting}
+              className="bg-green-600 hover:bg-green-700 text-xs h-9"
+            >
+              {isSubmitting ? "Processing..." : "Confirm Transaction"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

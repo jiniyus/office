@@ -10,15 +10,31 @@ import {
   X,
   MapPin
 } from "lucide-react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Switch } from "@/components/ui/switch";
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
   const { user, signOut } = useAuth();
   const [isMobileOpen, setIsMobileOpen] = useState(false);
+  const [advancedMode, setAdvancedMode] = useState(false);
+
+  // Load mode from localStorage on mount
+  useEffect(() => {
+    const savedMode = localStorage.getItem("stockpro-advanced-mode") === "true";
+    setAdvancedMode(savedMode);
+  }, []);
+
+  // Save mode to localStorage when it changes
+  const handleModeChange = (newMode: boolean) => {
+    setAdvancedMode(newMode);
+    localStorage.setItem("stockpro-advanced-mode", newMode.toString());
+    // Dispatch custom event for other components to detect mode change
+    window.dispatchEvent(new Event("stockpro-mode-changed"));
+  };
 
   const navigation = [
     { name: 'Stock', href: '/', icon: Package },
@@ -58,7 +74,21 @@ export function Layout({ children }: { children: React.ReactNode }) {
         })}
       </nav>
 
-      <div className="p-4 border-t border-slate-800">
+      <div className="p-4 border-t border-slate-800 space-y-4">
+        <div className="space-y-2">
+          <div className="flex items-center justify-between px-2">
+            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Mode</span>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium text-slate-300">{advancedMode ? "Advanced" : "Simple"}</span>
+              <Switch 
+                checked={advancedMode} 
+                onCheckedChange={handleModeChange}
+                className="scale-75"
+              />
+            </div>
+          </div>
+        </div>
+        
         <div className="flex items-center gap-3 px-4 py-3 mb-2">
           <Avatar className="h-9 w-9 border border-slate-700">
             <AvatarImage src={user?.photoURL} />
