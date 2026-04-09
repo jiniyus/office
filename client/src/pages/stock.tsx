@@ -709,19 +709,17 @@ export default function Stock() {
                       {/* Row Header with Delete */}
                       <div className="flex items-center justify-between cursor-pointer" onClick={() => setExpandedRowIndex(null)}>
                         <span className="text-xs font-semibold text-slate-600">Row {index + 1} (Click to collapse)</span>
-                        {bulkTransactionRows.length > 1 && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-6 w-6 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleRemoveBulkRow(index);
-                            }}
-                          >
-                            <Trash2 className="h-3 w-3" />
-                          </Button>
-                        )}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 w-6 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleRemoveBulkRow(index);
+                          }}
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </Button>
                       </div>
 
                       {/* Select Item - Full Width */}

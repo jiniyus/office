@@ -24,7 +24,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { db } from "@/lib/firebase";
-import { collection, query, where, getDocs, deleteDoc, doc, Timestamp } from "firebase/firestore";
+import { collection, query, where, getDocs, deleteDoc, doc, Timestamp, updateDoc } from "firebase/firestore";
 import { useToast } from "@/hooks/use-toast";
 
 export default function HistoryPage() {
@@ -94,6 +94,29 @@ export default function HistoryPage() {
       if (deleteConfirmId.isBulkGroup) {
         // Delete all transactions with this bulkTransactionId
         const allBulkTxs = filteredTransactions.filter(tx => tx.bulkTransactionId === deleteConfirmId.bulkTransactionId);
+        
+        if (deleteOption === 'reverse') {
+          // Find all items and restore their previous balances
+          const updatePromises = allBulkTxs.map(tx => {
+            // Get the item ID from itemId field
+            const itemName = tx.itemId;
+            // Find the item in stock-items collection by name
+            return getDocs(
+              query(collection(db, "stock-items"), where("name", "==", itemName))
+            ).then(snapshot => {
+              if (!snapshot.empty) {
+                const itemId = snapshot.docs[0].id;
+                return updateDoc(doc(db, "stock-items", itemId), {
+                  quantity: tx.previousBalance,
+                  lastUpdated: Timestamp.now()
+                });
+              }
+            });
+          });
+          await Promise.all(updatePromises);
+        }
+        
+        // Delete all transaction records
         const deletePromises = allBulkTxs.map(tx => deleteDoc(doc(db, "transactions", tx.id)));
         await Promise.all(deletePromises);
 
@@ -110,6 +133,23 @@ export default function HistoryPage() {
         }
       } else {
         // Delete single transaction
+        const tx = filteredTransactions.find(t => t.id === deleteConfirmId.id);
+        
+        if (deleteOption === 'reverse' && tx) {
+          // Restore previous balance
+          const itemName = tx.itemId;
+          const snapshot = await getDocs(
+            query(collection(db, "stock-items"), where("name", "==", itemName))
+          );
+          if (!snapshot.empty) {
+            const itemId = snapshot.docs[0].id;
+            await updateDoc(doc(db, "stock-items", itemId), {
+              quantity: tx.previousBalance,
+              lastUpdated: Timestamp.now()
+            });
+          }
+        }
+        
         await deleteDoc(doc(db, "transactions", deleteConfirmId.id));
         
         if (deleteOption === 'reverse') {

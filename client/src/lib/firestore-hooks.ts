@@ -88,6 +88,7 @@ export function useTransactions(limit: number = 50) {
             locationId: data.locationId,
             timestamp: data.timestamp?.toDate() || new Date(),
             type: data.type || 'adjustment',
+            bulkTransactionId: data.bulkTransactionId,
             user: data.user || { id: "", name: "Unknown" }
           };
         });

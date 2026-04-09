@@ -40,7 +40,8 @@ export interface Transaction {
   balance: number; // Balance after transaction
   locationId?: string; // Location reference
   timestamp: Date;
-  type: 'adjustment' | 'creation' | 'transfer'; // Track if it's a new item creation, quantity adjustment, or transfer
+  type: 'adjustment' | 'creation' | 'transfer' | 'bulk'; // Track if it's a new item creation, quantity adjustment, transfer, or bulk
+  bulkTransactionId?: string; // Groups related bulk transactions
   user: {
     id: string;
     name: string;
