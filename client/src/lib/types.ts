@@ -27,6 +27,9 @@ export interface StockItem {
   createdAt: Date;
   createdBy: string;
   lastUpdated?: Date;
+  heatTreatmentBalance?: number; // Balance in heat treatment
+  factoryBalance?: number; // Balance at factory
+  officeBalance?: number; // Balance at office
 }
 
 export interface Transaction {
@@ -40,8 +43,9 @@ export interface Transaction {
   balance: number; // Balance after transaction
   locationId?: string; // Location reference
   timestamp: Date;
-  type: 'adjustment' | 'creation' | 'transfer' | 'bulk'; // Track if it's a new item creation, quantity adjustment, transfer, or bulk
+  type: 'adjustment' | 'creation' | 'transfer' | 'bulk' | 'heat_treatment_created' | 'factory_transfer_created' | 'office_transfer_created'; // Track if it's a new item creation, quantity adjustment, transfer, bulk, or process
   bulkTransactionId?: string; // Groups related bulk transactions
+  processId?: string; // Reference to process if created from a process
   user: {
     id: string;
     name: string;

@@ -3,8 +3,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
-import { Plus, Search, Trash2, Minus, Check, X, ArrowRightLeft, Zap } from "lucide-react";
+import { Plus, Search, Trash2, Minus, Check, X, ArrowRightLeft, Zap, Filter, ChevronDown, ChevronUp } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { useState, useMemo, useEffect } from "react";
 import {
   Dialog,
@@ -33,6 +38,7 @@ import { capitalize } from "@/lib/utils";
 export default function Stock() {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
+  const [selectedLocations, setSelectedLocations] = useState<string[]>([]);
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [isTransferDialogOpen, setIsTransferDialogOpen] = useState(false);
   const [transferSourceId, setTransferSourceId] = useState<string | undefined>(undefined);
@@ -42,6 +48,9 @@ export default function Stock() {
   });
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | undefined>(undefined);
   const [editingQuantityId, setEditingQuantityId] = useState<string | undefined>(undefined);
+  const [expandedBalanceId, setExpandedBalanceId] = useState<string | undefined>(undefined);
+  const [filterByLocationBalance, setFilterByLocationBalance] = useState<'heat_treatment' | 'factory' | 'office' | null>(null);
+  const [selectedNames, setSelectedNames] = useState<string[]>([]);
   const [tempQuantity, setTempQuantity] = useState<{[key: string]: string}>({});
   const [isViewOnly, setIsViewOnly] = useState(false);
   const [advancedMode, setAdvancedMode] = useState(false);
@@ -63,7 +72,6 @@ export default function Stock() {
     category: "",
     quantity: "",
     size: "",
-    locationId: "",
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -106,6 +114,10 @@ export default function Stock() {
     return cats.sort();
   }, [items]);
 
+  const getTotalBalance = (item: any) => {
+    return ((item.heatTreatmentBalance || 0) + (item.factoryBalance || 0) + (item.officeBalance || 0));
+  };
+
   const filteredInventory = useMemo(() => {
     return items.filter(item => {
       const matchesSearch = item.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -113,9 +125,24 @@ export default function Stock() {
         item.category.toLowerCase().includes(searchTerm.toLowerCase());
       const matchesCategory = selectedCategories.length === 0 || 
         selectedCategories.includes(item.category);
-      return matchesSearch && matchesCategory;
+      const matchesName = selectedNames.length === 0 || 
+        selectedNames.includes(item.name);
+      
+      // Filter by location balance
+      let matchesLocationBalance = true;
+      if (filterByLocationBalance) {
+        if (filterByLocationBalance === 'heat_treatment') {
+          matchesLocationBalance = ((item as any).heatTreatmentBalance || 0) > 0;
+        } else if (filterByLocationBalance === 'factory') {
+          matchesLocationBalance = ((item as any).factoryBalance || 0) > 0;
+        } else if (filterByLocationBalance === 'office') {
+          matchesLocationBalance = ((item as any).officeBalance || 0) > 0;
+        }
+      }
+      
+      return matchesSearch && matchesCategory && matchesName && matchesLocationBalance;
     }).sort((a, b) => a.name.localeCompare(b.name));
-  }, [items, searchTerm, selectedCategories]);
+  }, [items, searchTerm, selectedCategories, selectedNames, filterByLocationBalance]);
 
   const handleQuantityUpdate = async (itemId: string, delta: number) => {
     if (delta === 0) return;
@@ -169,7 +196,6 @@ export default function Stock() {
         category: trimmedCategory,
         quantity: initialQuantity,
         size: trimmedSize,
-        locationId: newProduct.locationId || null,
         company: user?.company || "",
         createdAt: Timestamp.now(),
         createdBy: user?.email || "",
@@ -181,13 +207,12 @@ export default function Stock() {
         quantityChange: initialQuantity,
         previousBalance: 0,
         balance: initialQuantity,
-        locationId: newProduct.locationId || null,
         timestamp: Timestamp.now(),
         type: 'creation',
         user: { id: user?.uid || "", name: user?.displayName || "Unknown" }
       });
       toast({ title: "Success", description: "Product added successfully" });
-      setNewProduct({ name: "", category: "", quantity: "", size: "", locationId: "" });
+      setNewProduct({ name: "", category: "", quantity: "", size: "" });
       setIsAddDialogOpen(false);
     } catch (error) {
       toast({ variant: "destructive", title: "Error", description: "Failed to add product" });
@@ -371,6 +396,8 @@ export default function Stock() {
     }
   };
 
+
+
   if (loading) {
     return (
       <Layout>
@@ -402,6 +429,7 @@ export default function Stock() {
                 <Switch checked={isViewOnly} onCheckedChange={setIsViewOnly} />
               </div>
             </div>
+
             {advancedMode && (
               <Button
                 className="w-full h-10 shadow-lg shadow-purple-600/20 bg-purple-600 hover:bg-purple-700"
@@ -417,8 +445,8 @@ export default function Stock() {
         {/* Main Card */}
         <Card className="border-slate-200 shadow-sm">
           <CardContent className="p-0">
-            {/* Search Bar */}
-            <div className="flex items-center p-4 border-b border-slate-100 bg-slate-50/50">
+            {/* Search Bar with Filter */}
+            <div className="flex items-center gap-2 p-4 border-b border-slate-100 bg-slate-50/50">
               <div className="relative max-w-sm flex-1">
                 <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
                 <Input
@@ -428,6 +456,155 @@ export default function Stock() {
                   onChange={(e) => setSearchTerm(e.target.value)}
                 />
               </div>
+              
+              {/* Filter Button */}
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-2 h-10 border-slate-200"
+                  >
+                    <Filter className="h-4 w-4" />
+                    <span className="text-xs font-medium">Filter</span>
+                    {(selectedNames.length > 0 || selectedCategories.length > 0 || filterByLocationBalance) && (
+                      <Badge className="bg-blue-100 text-blue-700 h-5 rounded-full text-xs">
+                        {selectedNames.length + selectedCategories.length + (filterByLocationBalance ? 1 : 0)}
+                      </Badge>
+                    )}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-56 p-3" align="start">
+                  <div className="space-y-4">
+                    {/* Name Filter */}
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <h3 className="text-sm font-semibold text-slate-700">Name</h3>
+                        {selectedNames.length > 0 && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 px-2 text-xs text-slate-500 hover:text-slate-700"
+                            onClick={() => setSelectedNames([])}
+                          >
+                            Clear
+                          </Button>
+                        )}
+                      </div>
+                      <div className="space-y-2 max-h-40 overflow-y-auto">
+                        {items.map((item) => (
+                          <label key={item.id} className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={selectedNames.includes(item.name)}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setSelectedNames([...selectedNames, item.name]);
+                                } else {
+                                  setSelectedNames(selectedNames.filter(n => n !== item.name));
+                                }
+                              }}
+                              className="w-4 h-4 rounded border-slate-300 text-primary focus:ring-primary"
+                            />
+                            <span className="text-sm text-slate-600">{capitalize(item.name)}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Category Filter */}
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <h3 className="text-sm font-semibold text-slate-700">Category</h3>
+                        {selectedCategories.length > 0 && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 px-2 text-xs text-slate-500 hover:text-slate-700"
+                            onClick={() => setSelectedCategories([])}
+                          >
+                            Clear
+                          </Button>
+                        )}
+                      </div>
+                      <div className="space-y-2">
+                        {categories.map((category) => (
+                          <label key={category} className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={selectedCategories.includes(category)}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setSelectedCategories([...selectedCategories, category]);
+                                } else {
+                                  setSelectedCategories(selectedCategories.filter(c => c !== category));
+                                }
+                              }}
+                              className="w-4 h-4 rounded border-slate-300 text-primary focus:ring-primary"
+                            />
+                            <span className="text-sm text-slate-600">{capitalize(category)}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Location Balance Filter */}
+                    <div className="border-t border-slate-200 pt-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <h3 className="text-sm font-semibold text-slate-700">Location Balance</h3>
+                        {filterByLocationBalance && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 px-2 text-xs text-slate-500 hover:text-slate-700"
+                            onClick={() => setFilterByLocationBalance(null)}
+                          >
+                            Clear
+                          </Button>
+                        )}
+                      </div>
+                      <div className="space-y-2">
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="radio"
+                            checked={filterByLocationBalance === null}
+                            onChange={() => setFilterByLocationBalance(null)}
+                            className="w-4 h-4 rounded border-slate-300 text-primary focus:ring-primary"
+                          />
+                          <span className="text-sm text-slate-600">All Locations</span>
+                        </label>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="radio"
+                            checked={filterByLocationBalance === 'heat_treatment'}
+                            onChange={() => setFilterByLocationBalance('heat_treatment')}
+                            className="w-4 h-4 rounded border-slate-300 text-primary focus:ring-primary"
+                          />
+                          <span className="text-sm text-slate-600">Heat Treatment</span>
+                        </label>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="radio"
+                            checked={filterByLocationBalance === 'factory'}
+                            onChange={() => setFilterByLocationBalance('factory')}
+                            className="w-4 h-4 rounded border-slate-300 text-primary focus:ring-primary"
+                          />
+                          <span className="text-sm text-slate-600">Factory</span>
+                        </label>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="radio"
+                            checked={filterByLocationBalance === 'office'}
+                            onChange={() => setFilterByLocationBalance('office')}
+                            className="w-4 h-4 rounded border-slate-300 text-primary focus:ring-primary"
+                          />
+                          <span className="text-sm text-slate-600">Office</span>
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+                </PopoverContent>
+              </Popover>
             </div>
 
             {/* Unified Card View — same on mobile and desktop */}
@@ -438,16 +615,30 @@ export default function Stock() {
                 filteredInventory.map((item) => {
                   const location = item.locationId ? locations.find(l => l.id === item.locationId) : null;
                   return isViewOnly ? (
-                    // View Only Mode
-                    <div key={item.id} className="p-3 space-y-1">
-                      <div className="font-bold text-slate-900 text-base">{capitalize(item.name)}</div>
-                      <div className="flex items-center gap-8">
-                        <div className="flex-1">
-                          <p className="text-sm font-semibold text-slate-700">{capitalize(item.category)}</p>
-                          <p className="text-xs font-semibold text-slate-700 mt-1">Location: {location ? capitalize(location.name) : 'N/A'}</p>
+                    // View Only Mode - Compact single line with all balances
+                    <div key={item.id} className="p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex-1 min-w-0">
+                          <div className="font-bold text-slate-900 text-base">{capitalize(item.name)}</div>
+                          <p className="text-sm font-semibold text-slate-700 mt-0.5">{capitalize(item.category)}</p>
                         </div>
-                        <div className="bg-blue-600 text-white rounded font-bold px-3 py-1 min-w-max flex items-center justify-center">
-                          {item.quantity}
+                        <div className="flex items-center gap-1 flex-shrink-0">
+                          {/* Total Balance */}
+                          <div className="bg-blue-600 text-white rounded font-bold px-2 py-0.5 text-xs flex items-center justify-center min-w-fit">
+                            {getTotalBalance(item)}
+                          </div>
+                          {/* HT Balance */}
+                          <div className="bg-blue-100 text-blue-700 rounded px-1.5 py-0.5 text-xs font-semibold min-w-fit">
+                            HT: {(item as any).heatTreatmentBalance || 0}
+                          </div>
+                          {/* FA Balance */}
+                          <div className="bg-blue-100 text-blue-700 rounded px-1.5 py-0.5 text-xs font-semibold min-w-fit">
+                            FA: {(item as any).factoryBalance || 0}
+                          </div>
+                          {/* OF Balance */}
+                          <div className="bg-blue-100 text-blue-700 rounded px-1.5 py-0.5 text-xs font-semibold min-w-fit">
+                            OF: {(item as any).officeBalance || 0}
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -458,17 +649,8 @@ export default function Stock() {
                         <div>
                           <div className="font-bold text-slate-900 text-lg">{capitalize(item.name)}</div>
                           <div className="text-sm text-slate-600 mt-1 font-medium">{capitalize(item.category)}</div>
-                          <div className="text-xs font-semibold text-slate-700 mt-1">Location: {location ? capitalize(location.name) : 'N/A'}</div>
                         </div>
                         <div className="flex gap-1 flex-shrink-0">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-8 w-8 p-0 text-blue-600 hover:text-blue-700 hover:bg-blue-50"
-                            onClick={() => { setTransferSourceId(item.id!); setIsTransferDialogOpen(true); }}
-                          >
-                            <ArrowRightLeft className="h-4 w-4" />
-                          </Button>
                           <Button
                             variant="ghost"
                             size="sm"
@@ -487,8 +669,45 @@ export default function Stock() {
                         </div>
                         <div className="flex items-end justify-between gap-4">
                           <span className="font-mono text-slate-700 font-bold">{capitalize(item.size || '') || 'N/A'}</span>
-                          <div className="bg-blue-600 text-white rounded font-bold px-3 py-1 min-w-max flex items-center justify-center">
-                            {item.quantity}
+                          <div className="flex flex-col items-end gap-2">
+                            {/* Total Balance with Expandable */}
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-auto p-0 hover:bg-transparent"
+                              onClick={() => setExpandedBalanceId(expandedBalanceId === item.id ? undefined : item.id)}
+                            >
+                              <div className="flex items-center gap-2">
+                                <div className="bg-blue-600 text-white rounded font-bold px-3 py-1 flex items-center justify-center">
+                                  {getTotalBalance(item)}
+                                </div>
+                                {expandedBalanceId === item.id ? (
+                                  <ChevronUp className="h-4 w-4 text-slate-400" />
+                                ) : (
+                                  <ChevronDown className="h-4 w-4 text-slate-400" />
+                                )}
+                              </div>
+                            </Button>
+                            
+                            {/* Expanded Breakdown */}
+                            {expandedBalanceId === item.id && (
+                              <div className="w-full pt-2 border-t border-slate-200">
+                                <div className="flex gap-1">
+                                  <div className="flex-1 bg-blue-100 text-blue-700 rounded px-2 py-1 text-xs font-semibold text-center flex flex-col items-center justify-center">
+                                    <div>HT</div>
+                                    <div>{(item as any).heatTreatmentBalance || 0}</div>
+                                  </div>
+                                  <div className="flex-1 bg-blue-100 text-blue-700 rounded px-2 py-1 text-xs font-semibold text-center flex flex-col items-center justify-center">
+                                    <div>FA</div>
+                                    <div>{(item as any).factoryBalance || 0}</div>
+                                  </div>
+                                  <div className="flex-1 bg-blue-100 text-blue-700 rounded px-2 py-1 text-xs font-semibold text-center flex flex-col items-center justify-center">
+                                    <div>OF</div>
+                                    <div>{(item as any).officeBalance || 0}</div>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -599,17 +818,6 @@ export default function Stock() {
             <div className="space-y-2">
               <Label htmlFor="size">Size (Optional)</Label>
               <Input id="size" placeholder="Size" value={newProduct.size} onChange={(e) => setNewProduct({ ...newProduct, size: e.target.value })} />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="location">Location (Optional)</Label>
-              <Select value={newProduct.locationId} onValueChange={(value) => setNewProduct({ ...newProduct, locationId: value })}>
-                <SelectTrigger id="location"><SelectValue placeholder="Select a location" /></SelectTrigger>
-                <SelectContent>
-                  {locations.map((location) => (
-                    <SelectItem key={location.id} value={location.id}>{capitalize(location.name)}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
             </div>
           </div>
           <DialogFooter>
@@ -853,6 +1061,8 @@ export default function Stock() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+
     </Layout>
   );
 }

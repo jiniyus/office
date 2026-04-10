@@ -8,7 +8,8 @@ import {
   LogOut,
   Menu,
   X,
-  MapPin
+  MapPin,
+  Zap
 } from "lucide-react";
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
@@ -38,6 +39,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   const navigation = [
     { name: 'Stock', href: '/', icon: Package },
+    { name: 'Process', href: '/process', icon: Zap },
     { name: 'Location', href: '/location', icon: MapPin },
     { name: 'History', href: '/history', icon: History },
     { name: 'Profile', href: '/profile', icon: User },

@@ -47,30 +47,52 @@ export default function HistoryPage() {
   const handleDeleteTransaction = async (idOrBulkId: string, isBulkId: boolean = false) => {
     try {
       if (isBulkId) {
-        // This is a bulkTransactionId, find all related transactions
+        // Check if this is a bulkTransactionId or processId
         const allBulkTxs = filteredTransactions.filter(tx => tx.bulkTransactionId === idOrBulkId);
+        const allProcessTxs = filteredTransactions.filter(tx => tx.processId === idOrBulkId);
+        
         if (allBulkTxs.length > 0) {
           setDeleteConfirmId({
-            id: allBulkTxs[0].id, // Use first transaction's id
+            id: allBulkTxs[0].id,
             isBulkGroup: true,
             bulkTransactionId: idOrBulkId,
-            itemCount: allBulkTxs.length
+            itemCount: allBulkTxs.length,
+            type: 'bulk'
+          });
+        } else if (allProcessTxs.length > 0) {
+          setDeleteConfirmId({
+            id: allProcessTxs[0].id,
+            isBulkGroup: true,
+            processId: idOrBulkId,
+            itemCount: allProcessTxs.length,
+            type: 'process'
           });
         }
       } else {
-        // This is a transaction ID, check if it's part of a bulk transaction
+        // This is a transaction ID, check if it's part of a bulk or process transaction
         const bulkTx = filteredTransactions.find(tx => tx.id === idOrBulkId);
         
         if (bulkTx?.bulkTransactionId) {
           // This is part of a bulk transaction group
           const allBulkTxs = filteredTransactions.filter(tx => tx.bulkTransactionId === bulkTx.bulkTransactionId);
           
-          // Set up for double confirmation with options
           setDeleteConfirmId({
             id: idOrBulkId,
             isBulkGroup: true,
             bulkTransactionId: bulkTx.bulkTransactionId,
-            itemCount: allBulkTxs.length
+            itemCount: allBulkTxs.length,
+            type: 'bulk'
+          });
+        } else if (bulkTx?.processId) {
+          // This is part of a process group
+          const allProcessTxs = filteredTransactions.filter(tx => tx.processId === bulkTx.processId);
+          
+          setDeleteConfirmId({
+            id: idOrBulkId,
+            isBulkGroup: true,
+            processId: bulkTx.processId,
+            itemCount: allProcessTxs.length,
+            type: 'process'
           });
         } else {
           // Single transaction
@@ -78,7 +100,8 @@ export default function HistoryPage() {
             id: idOrBulkId,
             isBulkGroup: false,
             bulkTransactionId: null,
-            itemCount: 1
+            itemCount: 1,
+            type: 'single'
           });
         }
       }
@@ -92,12 +115,14 @@ export default function HistoryPage() {
 
     try {
       if (deleteConfirmId.isBulkGroup) {
-        // Delete all transactions with this bulkTransactionId
-        const allBulkTxs = filteredTransactions.filter(tx => tx.bulkTransactionId === deleteConfirmId.bulkTransactionId);
+        // Get the appropriate transactions based on type
+        const relevantTxs = deleteConfirmId.type === 'bulk'
+          ? filteredTransactions.filter(tx => tx.bulkTransactionId === deleteConfirmId.bulkTransactionId)
+          : filteredTransactions.filter(tx => tx.processId === deleteConfirmId.processId);
         
         if (deleteOption === 'reverse') {
           // Find all items and restore their previous balances
-          const updatePromises = allBulkTxs.map(tx => {
+          const updatePromises = relevantTxs.map(tx => {
             // Get the item ID from itemId field
             const itemName = tx.itemId;
             // Find the item in stock-items collection by name
@@ -117,18 +142,18 @@ export default function HistoryPage() {
         }
         
         // Delete all transaction records
-        const deletePromises = allBulkTxs.map(tx => deleteDoc(doc(db, "transactions", tx.id)));
+        const deletePromises = relevantTxs.map(tx => deleteDoc(doc(db, "transactions", tx.id)));
         await Promise.all(deletePromises);
 
         if (deleteOption === 'reverse') {
           toast({
             title: "Success",
-            description: `Reversed bulk transaction with ${allBulkTxs.length} items`,
+            description: `Reversed ${deleteConfirmId.type === 'bulk' ? 'bulk transaction' : 'process'} with ${relevantTxs.length} items`,
           });
         } else {
           toast({
             title: "Success",
-            description: `Deleted bulk transaction log with ${allBulkTxs.length} items`,
+            description: `Deleted ${deleteConfirmId.type === 'bulk' ? 'bulk transaction' : 'process'} log with ${relevantTxs.length} items`,
           });
         }
       } else {
@@ -177,6 +202,7 @@ export default function HistoryPage() {
 
   const groupBulkTransactions = (txs: any[]) => {
     const grouped: { [key: string]: any[] } = {};
+    const processGrouped: { [key: string]: any[] } = {};
     const singles: any[] = [];
 
     // Sort by timestamp first (newest first)
@@ -192,6 +218,11 @@ export default function HistoryPage() {
           grouped[tx.bulkTransactionId] = [];
         }
         grouped[tx.bulkTransactionId].push(tx);
+      } else if (tx.processId) {
+        if (!processGrouped[tx.processId]) {
+          processGrouped[tx.processId] = [];
+        }
+        processGrouped[tx.processId].push(tx);
       } else {
         singles.push(tx);
       }
@@ -204,6 +235,15 @@ export default function HistoryPage() {
         type: 'bulk', 
         transactions: group, 
         id: bulkId,
+        timestamp: group[0].timestamp 
+      });
+    });
+    // Add process groups
+    Object.entries(processGrouped).forEach(([processId, group]) => {
+      result.push({ 
+        type: 'process', 
+        transactions: group, 
+        id: processId,
         timestamp: group[0].timestamp 
       });
     });
@@ -470,6 +510,122 @@ export default function HistoryPage() {
                         )}
                       </div>
                     );
+                  } else if (item.type === 'process') {
+                    const processTransactions = item.transactions;
+                    const isExpanded = expandedBulkId === item.id;
+                    const firstTx = processTransactions[0];
+
+                    // Determine process type from first transaction
+                    const processType = firstTx.type === 'heat_treatment_created' 
+                      ? 'HEAT TREATMENT'
+                      : firstTx.type === 'factory_transfer_created'
+                      ? 'FACTORY TRANSFER'
+                      : 'OFFICE TRANSFER';
+
+                    const badgeColor = firstTx.type === 'heat_treatment_created'
+                      ? 'bg-orange-100 text-orange-700'
+                      : firstTx.type === 'factory_transfer_created'
+                      ? 'bg-blue-100 text-blue-700'
+                      : 'bg-green-100 text-green-700';
+
+                    return (
+                      <div key={item.id} className="border-b border-slate-100 last:border-b-0">
+                        {/* Process Group Header */}
+                        <div 
+                          className="p-3 hover:bg-slate-50 transition-colors cursor-pointer flex items-center gap-3"
+                          onClick={() => setExpandedBulkId(isExpanded ? null : item.id)}
+                        >
+                          <div className="flex-shrink-0">
+                            {isExpanded ? (
+                              <ChevronDown className="h-5 w-5 text-slate-400" />
+                            ) : (
+                              <ChevronRight className="h-5 w-5 text-slate-400" />
+                            )}
+                          </div>
+                          <Badge className={`${badgeColor} text-xs`}>{processType}</Badge>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-semibold text-slate-900">
+                              {processType} Process ({processTransactions.length} items)
+                            </p>
+                            <div className="flex items-center gap-2 mt-1 flex-wrap">
+                              <span className="text-xs text-slate-500">
+                                <span className="font-medium text-slate-700">{firstTx.user.name}</span>
+                              </span>
+                              <span className="text-xs text-slate-400">
+                                {formatExactTime(firstTx.timestamp)}
+                              </span>
+                            </div>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 px-2 text-red-600 hover:text-red-700 hover:bg-red-50"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteTransaction(item.id, true);
+                            }}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+
+                        {/* Process Group Items */}
+                        {isExpanded && (
+                          <div className="bg-slate-50/50 divide-y divide-slate-100 border-t border-slate-100">
+                            {processTransactions.map((entry) => {
+                              const isIncrease = entry.quantityChange > 0;
+                              const location = entry.locationId ? locations.find(l => l.id === entry.locationId) : null;
+                              return (
+                                <div key={entry.id} className="p-3 flex items-center justify-between gap-4 pl-12">
+                                  <div className="flex items-center gap-3 flex-1 min-w-0">
+                                    <div className={`
+                                      h-8 w-8 rounded-full flex items-center justify-center border flex-shrink-0 text-xs
+                                      ${isIncrease
+                                        ? 'bg-emerald-50 border-emerald-100 text-emerald-600' 
+                                        : 'bg-amber-50 border-amber-100 text-amber-600'}
+                                    `}>
+                                      {isIncrease ? <ArrowDownLeft className="h-3 w-3" /> : <ArrowUpRight className="h-3 w-3" />}
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                      <p className="text-sm font-semibold text-slate-900 truncate">
+                                        {capitalize(entry.itemId)}
+                                      </p>
+                                      <div className="flex items-center gap-2 flex-wrap mt-1">
+                                        <Badge variant="secondary" className="text-xs font-normal bg-slate-100 text-slate-600">
+                                          {capitalize(entry.category)}
+                                        </Badge>
+                                        {location && (
+                                          <Badge variant="secondary" className="text-xs font-normal bg-blue-50 text-blue-700">
+                                            {capitalize(location.name)}
+                                          </Badge>
+                                        )}
+                                      </div>
+                                      <div className="flex items-center gap-2 mt-1">
+                                        <span className="text-xs text-slate-600">Before: <span className="font-semibold">{entry.previousBalance}</span></span>
+                                        <span className="text-xs text-slate-600">After: <span className="font-semibold">{entry.balance}</span></span>
+                                      </div>
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center gap-3">
+                                    <div className={`text-sm font-bold flex-shrink-0 ${isIncrease ? 'text-emerald-600' : 'text-red-600'}`}>
+                                      {isIncrease ? '+' : ''}{entry.quantityChange}
+                                    </div>
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      className="h-7 w-7 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
+                                      onClick={() => handleDeleteTransaction(entry.id)}
+                                    >
+                                      <Trash2 className="h-3 w-3" />
+                                    </Button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
                   } else {
                     const entry = item.transaction;
                     const isIncrease = entry.quantityChange > 0;
@@ -495,6 +651,15 @@ export default function HistoryPage() {
                               )}
                               {entry.type === 'transfer' && (
                                 <Badge className="bg-purple-100 text-purple-700 text-xs">TRANSFER</Badge>
+                              )}
+                              {entry.type === 'heat_treatment_created' && (
+                                <Badge className="bg-orange-100 text-orange-700 text-xs">HEAT TREATMENT</Badge>
+                              )}
+                              {entry.type === 'factory_transfer_created' && (
+                                <Badge className="bg-blue-100 text-blue-700 text-xs">FACTORY TRANSFER</Badge>
+                              )}
+                              {entry.type === 'office_transfer_created' && (
+                                <Badge className="bg-green-100 text-green-700 text-xs">OFFICE TRANSFER</Badge>
                               )}
                             </div>
                             <div className="flex items-center gap-2 flex-wrap mt-1">

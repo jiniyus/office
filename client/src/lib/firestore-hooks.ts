@@ -36,7 +36,10 @@ export function useStockItems() {
             company: data.company,
             createdAt: data.createdAt?.toDate() || new Date(),
             createdBy: data.createdBy,
-            lastUpdated: data.lastUpdated?.toDate()
+            lastUpdated: data.lastUpdated?.toDate(),
+            heatTreatmentBalance: data.heatTreatmentBalance || 0,
+            factoryBalance: data.factoryBalance || 0,
+            officeBalance: data.officeBalance || 0
           };
         });
         setItems(itemsData);
@@ -89,6 +92,7 @@ export function useTransactions(limit: number = 50) {
             timestamp: data.timestamp?.toDate() || new Date(),
             type: data.type || 'adjustment',
             bulkTransactionId: data.bulkTransactionId,
+            processId: data.processId,
             user: data.user || { id: "", name: "Unknown" }
           };
         });
