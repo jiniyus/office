@@ -96,6 +96,13 @@ export function useTransactions(limit: number = 50) {
             transferId: data.transferId,
             salesId: data.salesId,
             salesCompany: data.salesCompany,
+            affectedBalance: data.affectedBalance,
+            previousHTBalance: data.previousHTBalance,
+            previousFABalance: data.previousFABalance,
+            previousOFBalance: data.previousOFBalance,
+            newHTBalance: data.newHTBalance,
+            newFABalance: data.newFABalance,
+            newOFBalance: data.newOFBalance,
             user: data.user || { id: "", name: "Unknown" }
           };
         });

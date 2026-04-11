@@ -1,4 +1,4 @@
-import { Layout } from "@/components/layout";
+﻿import { Layout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -30,7 +30,7 @@ import { Label } from "@/components/ui/label";
 import { useStockItems, useLocations } from "@/lib/firestore-hooks";
 import { Spinner } from "@/components/ui/spinner";
 import { useAuth } from "@/lib/auth";
-import { collection, addDoc, Timestamp, updateDoc, doc, deleteDoc } from "firebase/firestore";
+import { collection, addDoc, Timestamp, updateDoc, doc, deleteDoc, getDocs, query, where } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useToast } from "@/hooks/use-toast";
 import { capitalize } from "@/lib/utils";
@@ -128,6 +128,21 @@ export default function Stock() {
   const { locations } = useLocations();
   const { user } = useAuth();
   const { toast } = useToast();
+
+  // Helper function to sort items by name and category
+  const sortItems = (itemsToSort: typeof items) => {
+    return [...itemsToSort].sort((a, b) => {
+      const nameA = a.name.toLowerCase();
+      const nameB = b.name.toLowerCase();
+      const catA = a.category.toLowerCase();
+      const catB = b.category.toLowerCase();
+      
+      const nameCompare = nameA.localeCompare(nameB, undefined, { numeric: true });
+      if (nameCompare !== 0) return nameCompare;
+      
+      return catA.localeCompare(catB, undefined, { numeric: true });
+    });
+  };
 
   const categories = useMemo(() => {
     const cats = Array.from(new Set(items.map(item => item.category)));
@@ -408,6 +423,13 @@ export default function Stock() {
           timestamp: Timestamp.now(),
           type: 'bulk',
           bulkTransactionId: bulkTransactionId,
+          affectedBalance: 'quantity',
+          previousHTBalance: (item as any).heatTreatmentBalance || 0,
+          previousFABalance: (item as any).factoryBalance || 0,
+          previousOFBalance: (item as any).officeBalance || 0,
+          newHTBalance: (item as any).heatTreatmentBalance || 0,
+          newFABalance: (item as any).factoryBalance || 0,
+          newOFBalance: (item as any).officeBalance || 0,
           user: { id: user?.uid || "", name: user?.displayName || "Unknown" }
         });
       }
@@ -466,6 +488,20 @@ export default function Stock() {
       setIsSubmitting(true);
       const salesId = `sales-${Date.now()}`;
       const transactionRecords = [];
+      
+      // Get office transfer processes once and keep a mutable copy
+      const processesSnapshot = await getDocs(query(collection(db, "processes"), where("processType", "==", "office_transfer")));
+      let updatedProcesses: any[] = processesSnapshot.docs
+        .map(docSnap => {
+          const data = docSnap.data();
+          return {
+            id: docSnap.id,
+            createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt),
+            items: data.items || [],
+            ...data
+          };
+        })
+        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
 
       for (const row of salesRows) {
         const item = items.find(it => it.id === row.id)!;
@@ -484,6 +520,50 @@ export default function Stock() {
           lastUpdated: Timestamp.now()
         });
 
+        // Update office transfer processes in FIFO order
+        const ofProcesses = updatedProcesses
+          .filter(p => p.items.some((pi: any) => pi.itemId === item.id))
+          .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+
+        let remainingQtyToDeduct = qty;
+        
+        for (const ofProcess of ofProcesses) {
+          if (remainingQtyToDeduct <= 0) break;
+          
+          // Find this process in updatedProcesses
+          const processIndex = updatedProcesses.findIndex(p => p.id === ofProcess.id);
+          if (processIndex === -1) continue;
+          
+          const processToUpdate = updatedProcesses[processIndex];
+          
+          // Find the specific item in this process
+          let foundItemIndex = processToUpdate.items.findIndex((pi: any) => pi.itemId === item.id);
+          
+          if (foundItemIndex !== -1) {
+            const processItem = processToUpdate.items[foundItemIndex];
+            const currentQty = processItem.quantity;
+            const deductAmount = Math.min(currentQty, remainingQtyToDeduct);
+            remainingQtyToDeduct -= deductAmount;
+            
+            processToUpdate.items[foundItemIndex] = {
+              ...processItem,
+              quantity: currentQty - deductAmount
+            };
+            
+            // Remove items with 0 quantity
+            processToUpdate.items = processToUpdate.items.filter((pi: any) => pi.quantity > 0);
+          }
+
+          // Mark process for update in Firestore
+          if (processToUpdate.items.length === 0) {
+            // Mark for deletion
+            updatedProcesses[processIndex] = { ...processToUpdate, _delete: true };
+          } else {
+            // Mark for update
+            updatedProcesses[processIndex] = { ...processToUpdate, _update: true };
+          }
+        }
+
         // Record transaction
         transactionRecords.push({
           itemId: item.name,
@@ -497,8 +577,27 @@ export default function Stock() {
           type: 'sales',
           salesId: salesId,
           salesCompany: selectedSalesCompany,
+          affectedBalance: 'officeBalance',
+          previousHTBalance: htBalance,
+          previousFABalance: faBalance,
+          previousOFBalance: ofBalance,
+          newHTBalance: htBalance,
+          newFABalance: faBalance,
+          newOFBalance: newOFBalance,
           user: { id: user?.uid || "", name: user?.displayName || "Unknown" }
         });
+      }
+
+      // Now apply all Firestore updates for processes
+      for (const process of updatedProcesses) {
+        if (process._delete) {
+          await deleteDoc(doc(db, "processes", process.id));
+        } else if (process._update) {
+          const { _delete, _update, ...processData } = process;
+          await updateDoc(doc(db, "processes", process.id), {
+            items: process.items,
+          });
+        }
       }
 
       // Save all transaction records
@@ -1065,7 +1164,7 @@ export default function Stock() {
                         }}>
                           <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Select item" /></SelectTrigger>
                           <SelectContent className="max-h-[250px]">
-                            {items.map((item) => (
+                            {sortItems(items).map((item) => (
                               <SelectItem key={item.id} value={item.id} className="text-xs">
                                 {capitalize(item.name)} - {item.quantity} units
                               </SelectItem>
@@ -1277,7 +1376,7 @@ export default function Stock() {
                           }}>
                             <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Select item" /></SelectTrigger>
                             <SelectContent className="max-h-[250px]">
-                              {items.filter(item => ((item as any).officeBalance || 0) > 0).map((item) => (
+                              {sortItems(items.filter(item => ((item as any).officeBalance || 0) > 0)).map((item) => (
                                 <SelectItem key={item.id} value={item.id} className="text-xs">
                                   {capitalize(item.name)} - OF: {((item as any).officeBalance || 0)} units
                                 </SelectItem>

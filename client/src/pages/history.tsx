@@ -199,8 +199,8 @@ export default function HistoryPage() {
           relevantTxs = filteredTransactions.filter(tx => tx.salesId === deleteConfirmId.salesId);
         }
         
-        if (deleteOption === 'reverse' && (deleteConfirmId.type === 'bulk' || deleteConfirmId.type === 'process')) {
-          // Find all items and restore their previous balances (only for bulk and process, not for transfers or sales)
+        if (deleteOption === 'reverse' && (deleteConfirmId.type === 'bulk' || deleteConfirmId.type === 'process' || deleteConfirmId.type === 'transfer' || deleteConfirmId.type === 'sales')) {
+          // Find all items and restore their previous balances
           const updatePromises = relevantTxs.map(tx => {
             // Get the item ID from itemId field
             const itemName = tx.itemId;
@@ -210,10 +210,36 @@ export default function HistoryPage() {
             ).then(snapshot => {
               if (!snapshot.empty) {
                 const itemId = snapshot.docs[0].id;
-                return updateDoc(doc(db, "stock-items", itemId), {
-                  quantity: tx.previousBalance,
+                
+                // Prepare the update object based on transaction type
+                const updateObj: any = {
                   lastUpdated: Timestamp.now()
-                });
+                };
+                
+                // If we have stored balance information, use it for precise restoration
+                if (tx.previousHTBalance !== undefined && tx.previousFABalance !== undefined && tx.previousOFBalance !== undefined) {
+                  updateObj.heatTreatmentBalance = tx.previousHTBalance;
+                  updateObj.factoryBalance = tx.previousFABalance;
+                  updateObj.officeBalance = tx.previousOFBalance;
+                  updateObj.quantity = tx.previousHTBalance + tx.previousFABalance + tx.previousOFBalance;
+                } else {
+                  // Fallback for old transactions without balance metadata
+                  // For backwards compatibility, restore total quantity from previousBalance
+                  updateObj.quantity = tx.previousBalance;
+                  
+                  // Try to infer which balance field was affected based on transaction type
+                  if (tx.type === 'sales') {
+                    updateObj.officeBalance = tx.previousBalance;
+                  } else if (tx.type === 'heat_treatment_created') {
+                    updateObj.heatTreatmentBalance = tx.previousBalance;
+                  } else if (tx.type === 'factory_transfer_created') {
+                    updateObj.heatTreatmentBalance = tx.previousBalance;
+                  } else if (tx.type === 'office_transfer_created') {
+                    updateObj.factoryBalance = tx.previousBalance;
+                  }
+                }
+                
+                return updateDoc(doc(db, "stock-items", itemId), updateObj);
               }
             });
           });
@@ -251,18 +277,64 @@ export default function HistoryPage() {
         // Delete single transaction
         const tx = filteredTransactions.find(t => t.id === deleteConfirmId.id);
         
-        if (deleteOption === 'reverse' && tx && tx.type !== 'factory_transfer_created' && tx.type !== 'office_transfer_created') {
-          // Restore previous balance (not for transfers)
+        if (deleteOption === 'reverse' && tx && tx.type !== 'factory_transfer_created' && tx.type !== 'office_transfer_created' && tx.type !== 'sales') {
+          // Restore previous balance (for bulk and process transactions)
           const itemName = tx.itemId;
           const snapshot = await getDocs(
             query(collection(db, "stock-items"), where("name", "==", itemName))
           );
           if (!snapshot.empty) {
             const itemId = snapshot.docs[0].id;
-            await updateDoc(doc(db, "stock-items", itemId), {
-              quantity: tx.previousBalance,
+            
+            // Prepare the update object
+            const updateObj: any = {
               lastUpdated: Timestamp.now()
-            });
+            };
+            
+            // If we have stored balance information, use it
+            if (tx.previousHTBalance !== undefined && tx.previousFABalance !== undefined && tx.previousOFBalance !== undefined) {
+              updateObj.heatTreatmentBalance = tx.previousHTBalance;
+              updateObj.factoryBalance = tx.previousFABalance;
+              updateObj.officeBalance = tx.previousOFBalance;
+              updateObj.quantity = tx.previousHTBalance + tx.previousFABalance + tx.previousOFBalance;
+            } else {
+              updateObj.quantity = tx.previousBalance;
+            }
+            
+            await updateDoc(doc(db, "stock-items", itemId), updateObj);
+          }
+        } else if (deleteOption === 'reverse' && tx && (tx.type === 'sales' || tx.type === 'factory_transfer_created' || tx.type === 'office_transfer_created')) {
+          // For sales, factory_transfer, and office_transfer, restore location-specific balances
+          const itemName = tx.itemId;
+          const snapshot = await getDocs(
+            query(collection(db, "stock-items"), where("name", "==", itemName))
+          );
+          if (!snapshot.empty) {
+            const itemId = snapshot.docs[0].id;
+            
+            // Prepare the update object based on transaction metadata
+            const updateObj: any = {
+              lastUpdated: Timestamp.now()
+            };
+            
+            if (tx.previousHTBalance !== undefined && tx.previousFABalance !== undefined && tx.previousOFBalance !== undefined) {
+              updateObj.heatTreatmentBalance = tx.previousHTBalance;
+              updateObj.factoryBalance = tx.previousFABalance;
+              updateObj.officeBalance = tx.previousOFBalance;
+              updateObj.quantity = tx.previousHTBalance + tx.previousFABalance + tx.previousOFBalance;
+            } else {
+              // Fallback for old transactions
+              if (tx.type === 'sales') {
+                updateObj.officeBalance = tx.previousBalance;
+              } else if (tx.type === 'factory_transfer_created') {
+                updateObj.heatTreatmentBalance = tx.previousBalance;
+              } else if (tx.type === 'office_transfer_created') {
+                updateObj.factoryBalance = tx.previousBalance;
+              }
+              updateObj.quantity = tx.previousBalance;
+            }
+            
+            await updateDoc(doc(db, "stock-items", itemId), updateObj);
           }
         }
         

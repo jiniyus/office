@@ -24,7 +24,7 @@ import { Label } from "@/components/ui/label";
 import { useStockItems } from "@/lib/firestore-hooks";
 import { Spinner } from "@/components/ui/spinner";
 import { useAuth } from "@/lib/auth";
-import { collection, addDoc, Timestamp, deleteDoc, doc, updateDoc, getDocs, query, where } from "firebase/firestore";
+import { collection, addDoc, Timestamp, deleteDoc, doc, updateDoc, getDocs, query, where, onSnapshot } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useToast } from "@/hooks/use-toast";
 import { capitalize } from "@/lib/utils";
@@ -75,12 +75,26 @@ export default function ProcessPage() {
   const { user } = useAuth();
   const { toast } = useToast();
 
-  // Load processes from Firestore on component mount
+  // Helper function to sort items by name and category
+  const sortItems = (itemsToSort: typeof items) => {
+    return [...itemsToSort].sort((a, b) => {
+      const nameA = a.name.toLowerCase();
+      const nameB = b.name.toLowerCase();
+      const catA = a.category.toLowerCase();
+      const catB = b.category.toLowerCase();
+      
+      const nameCompare = nameA.localeCompare(nameB, undefined, { numeric: true });
+      if (nameCompare !== 0) return nameCompare;
+      
+      return catA.localeCompare(catB, undefined, { numeric: true });
+    });
+  };
+
+  // Load processes from Firestore on component mount with real-time updates
   useEffect(() => {
-    const loadProcesses = async () => {
-      try {
-        const q = query(collection(db, "processes"));
-        const querySnapshot = await getDocs(q);
+    try {
+      const q = query(collection(db, "processes"));
+      const unsubscribe = onSnapshot(q, (querySnapshot) => {
         const loadedProcesses = querySnapshot.docs.map(docSnap => {
           const data = docSnap.data();
           return {
@@ -103,12 +117,12 @@ export default function ProcessPage() {
           const maxSerialNumber = Math.max(...loadedProcesses.map(p => parseInt(p.serialNumber) || 0));
           setSerialCounter(maxSerialNumber + 1);
         }
-      } catch (error) {
-        console.error("Error loading processes:", error);
-      }
-    };
+      });
 
-    loadProcesses();
+      return () => unsubscribe();
+    } catch (error) {
+      console.error("Error setting up processes listener:", error);
+    }
   }, []);
 
   // Generate serial number when modal opens
@@ -241,6 +255,10 @@ export default function ProcessPage() {
 
         // Create history log entry for this item
         const historyType = `${selectedProcess}_created`;
+        const htBalance = (stockItem as any).heatTreatmentBalance || 0;
+        const faBalance = (stockItem as any).factoryBalance || 0;
+        const ofBalance = (stockItem as any).officeBalance || 0;
+        
         await addDoc(collection(db, "transactions"), {
           itemId: item.itemName,
           category: item.category,
@@ -252,6 +270,13 @@ export default function ProcessPage() {
           timestamp: Timestamp.now(),
           type: historyType as any,
           processId: docRef.id,
+          affectedBalance: balanceField,
+          previousHTBalance: selectedProcess === 'heat_treatment' ? currentBalance : htBalance,
+          previousFABalance: selectedProcess === 'factory_transfer' ? currentBalance : faBalance,
+          previousOFBalance: selectedProcess === 'office_transfer' ? currentBalance : ofBalance,
+          newHTBalance: selectedProcess === 'heat_treatment' ? newBalance : htBalance,
+          newFABalance: selectedProcess === 'factory_transfer' ? newBalance : faBalance,
+          newOFBalance: selectedProcess === 'office_transfer' ? newBalance : ofBalance,
           user: { id: user?.uid || "", name: user?.displayName || "Unknown" }
         });
       }
@@ -376,6 +401,7 @@ export default function ProcessPage() {
     try {
       setIsSubmitting(true);
       const factoryTransferId = `transfer-factory-${Date.now()}`;
+      const affectedProcessIds = new Set<string>();
 
       for (const row of factoryTransferRows) {
         const item = items.find(it => it.id === row.id);
@@ -397,6 +423,41 @@ export default function ProcessPage() {
           lastUpdated: Timestamp.now(),
         });
 
+        // Update heat treatment processes in FIFO order
+        const htProcesses = processes
+          .filter(p => p.processType === "heat_treatment" && p.items.some(pi => pi.itemId === item.id))
+          .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+
+        let remainingQtyToDeduct = qty;
+        
+        for (const htProcess of htProcesses) {
+          if (remainingQtyToDeduct <= 0) break;
+          
+          affectedProcessIds.add(htProcess.id);
+          const itemIndex = htProcess.items.findIndex(pi => pi.itemId === item.id);
+          if (itemIndex === -1) continue;
+          
+          const currentQty = htProcess.items[itemIndex].quantity;
+          const deductAmount = Math.min(currentQty, remainingQtyToDeduct);
+          remainingQtyToDeduct -= deductAmount;
+          const newQty = currentQty - deductAmount;
+          
+          // Update or delete the process
+          if (newQty === 0) {
+            const updatedItems = htProcess.items.filter((_, idx) => idx !== itemIndex);
+            if (updatedItems.length === 0) {
+              await deleteDoc(doc(db, "processes", htProcess.id));
+            } else {
+              await updateDoc(doc(db, "processes", htProcess.id), { items: updatedItems });
+            }
+          } else {
+            const updatedItems = htProcess.items.map((pi, idx) => 
+              idx === itemIndex ? { ...pi, quantity: newQty } : pi
+            );
+            await updateDoc(doc(db, "processes", htProcess.id), { items: updatedItems });
+          }
+        }
+
         // Record transaction
         await addDoc(collection(db, "transactions"), {
           itemId: item.name,
@@ -409,9 +470,73 @@ export default function ProcessPage() {
           timestamp: Timestamp.now(),
           type: 'factory_transfer_created',
           transferId: factoryTransferId,
+          affectedBalance: 'heatTreatmentBalance',
+          previousHTBalance: htBalance,
+          previousFABalance: faBalance,
+          previousOFBalance: ofBalance,
+          newHTBalance: newHTBalance,
+          newFABalance: newFABalance,
+          newOFBalance: ofBalance,
           user: { id: user?.uid || "", name: user?.displayName || "Unknown" }
         });
       }
+
+      // Rebuild processes state with proper FIFO deduction tracking
+      const affectedByItem = new Map<string, number>(); // itemId -> total to deduct
+      
+      for (const row of factoryTransferRows) {
+        const current = affectedByItem.get(row.id) ?? 0;
+        affectedByItem.set(row.id, current + (parseInt(row.quantity) || 0));
+      }
+
+      // Track globally how much we've deducted from each item across ALL processes
+      const globalDeducted = new Map<string, number>();
+
+      const updatedProcesses = processes
+        .filter(p => !affectedProcessIds.has(p.id) || p.processType !== "heat_treatment")
+        .concat(
+          Array.from(affectedProcessIds)
+            .map(id => processes.find(p => p.id === id && p.processType === "heat_treatment"))
+            .filter((p): p is typeof processes[0] => p !== null)
+            .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+            .flatMap(p => {
+              // For this process, deduct from items in FIFO order
+              let currentItems = [...p.items];
+              
+              // Process each item in this batch
+              const deductedThisBatch = new Map<string, number>();
+              
+              for (const item of currentItems) {
+                const toDeductTotal = affectedByItem.get(item.itemId) ?? 0;
+                const alreadyDeductedGlobally = globalDeducted.get(item.itemId) ?? 0;
+                const remainingToDeduct = toDeductTotal - alreadyDeductedGlobally;
+                
+                if (remainingToDeduct > 0) {
+                  const deductAmount = Math.min(item.quantity, remainingToDeduct);
+                  deductedThisBatch.set(item.itemId, (deductedThisBatch.get(item.itemId) ?? 0) + deductAmount);
+                }
+              }
+
+              // Update global deduced amounts
+              for (const [itemId, amount] of deductedThisBatch) {
+                globalDeducted.set(itemId, (globalDeducted.get(itemId) ?? 0) + amount);
+              }
+
+              // Apply deductions to this process
+              currentItems = currentItems
+                .map(it => {
+                  const deducted = deductedThisBatch.get(it.itemId) ?? 0;
+                  return deducted > 0 
+                    ? { ...it, quantity: it.quantity - deducted }
+                    : it;
+                })
+                .filter(it => it.quantity > 0);
+
+              return currentItems.length > 0 ? [{ ...p, items: currentItems }] : [];
+            })
+        );
+
+      setProcesses(updatedProcesses);
 
       toast({
         title: "Success",
@@ -469,6 +594,7 @@ export default function ProcessPage() {
     try {
       setIsSubmitting(true);
       const officeTransferId = `transfer-office-${Date.now()}`;
+      const affectedProcessIds = new Set<string>();
 
       for (const row of officeTransferRows) {
         const item = items.find(it => it.id === row.id);
@@ -490,6 +616,41 @@ export default function ProcessPage() {
           lastUpdated: Timestamp.now(),
         });
 
+        // Update factory processes in FIFO order
+        const faProcesses = processes
+          .filter(p => p.processType === "factory" && p.items.some(pi => pi.itemId === item.id))
+          .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+
+        let remainingQtyToDeduct = qty;
+        
+        for (const faProcess of faProcesses) {
+          if (remainingQtyToDeduct <= 0) break;
+          
+          affectedProcessIds.add(faProcess.id);
+          const itemIndex = faProcess.items.findIndex(pi => pi.itemId === item.id);
+          if (itemIndex === -1) continue;
+          
+          const currentQty = faProcess.items[itemIndex].quantity;
+          const deductAmount = Math.min(currentQty, remainingQtyToDeduct);
+          remainingQtyToDeduct -= deductAmount;
+          const newQty = currentQty - deductAmount;
+          
+          // Update or delete the process
+          if (newQty === 0) {
+            const updatedItems = faProcess.items.filter((_, idx) => idx !== itemIndex);
+            if (updatedItems.length === 0) {
+              await deleteDoc(doc(db, "processes", faProcess.id));
+            } else {
+              await updateDoc(doc(db, "processes", faProcess.id), { items: updatedItems });
+            }
+          } else {
+            const updatedItems = faProcess.items.map((pi, idx) => 
+              idx === itemIndex ? { ...pi, quantity: newQty } : pi
+            );
+            await updateDoc(doc(db, "processes", faProcess.id), { items: updatedItems });
+          }
+        }
+
         // Record transaction
         await addDoc(collection(db, "transactions"), {
           itemId: item.name,
@@ -502,9 +663,73 @@ export default function ProcessPage() {
           timestamp: Timestamp.now(),
           type: 'office_transfer_created',
           transferId: officeTransferId,
+          affectedBalance: 'factoryBalance',
+          previousHTBalance: htBalance,
+          previousFABalance: faBalance,
+          previousOFBalance: ofBalance,
+          newHTBalance: htBalance,
+          newFABalance: newFABalance,
+          newOFBalance: newOFBalance,
           user: { id: user?.uid || "", name: user?.displayName || "Unknown" }
         });
       }
+
+      // Rebuild processes state with proper FIFO deduction tracking
+      const affectedByItem = new Map<string, number>(); // itemId -> total to deduct
+      
+      for (const row of officeTransferRows) {
+        const current = affectedByItem.get(row.id) ?? 0;
+        affectedByItem.set(row.id, current + (parseInt(row.quantity) || 0));
+      }
+
+      // Track globally how much we've deducted from each item across ALL processes
+      const globalDeducted = new Map<string, number>();
+
+      const updatedProcesses = processes
+        .filter(p => !affectedProcessIds.has(p.id) || p.processType !== "factory")
+        .concat(
+          Array.from(affectedProcessIds)
+            .map(id => processes.find(p => p.id === id && p.processType === "factory"))
+            .filter((p): p is typeof processes[0] => p !== null)
+            .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+            .flatMap(p => {
+              // For this process, deduct from items in FIFO order
+              let currentItems = [...p.items];
+              
+              // Process each item in this batch
+              const deductedThisBatch = new Map<string, number>();
+              
+              for (const item of currentItems) {
+                const toDeductTotal = affectedByItem.get(item.itemId) ?? 0;
+                const alreadyDeductedGlobally = globalDeducted.get(item.itemId) ?? 0;
+                const remainingToDeduct = toDeductTotal - alreadyDeductedGlobally;
+                
+                if (remainingToDeduct > 0) {
+                  const deductAmount = Math.min(item.quantity, remainingToDeduct);
+                  deductedThisBatch.set(item.itemId, (deductedThisBatch.get(item.itemId) ?? 0) + deductAmount);
+                }
+              }
+
+              // Update global deduced amounts
+              for (const [itemId, amount] of deductedThisBatch) {
+                globalDeducted.set(itemId, (globalDeducted.get(itemId) ?? 0) + amount);
+              }
+
+              // Apply deductions to this process
+              currentItems = currentItems
+                .map(it => {
+                  const deducted = deductedThisBatch.get(it.itemId) ?? 0;
+                  return deducted > 0 
+                    ? { ...it, quantity: it.quantity - deducted }
+                    : it;
+                })
+                .filter(it => it.quantity > 0);
+
+              return currentItems.length > 0 ? [{ ...p, items: currentItems }] : [];
+            })
+        );
+
+      setProcesses(updatedProcesses);
 
       toast({
         title: "Success",
@@ -781,9 +1006,9 @@ export default function ProcessPage() {
                                   <SelectValue placeholder="Select item" />
                                 </SelectTrigger>
                                 <SelectContent className="max-h-[250px]">
-                                  {items.map((item) => (
+                                  {sortItems(items).map((item) => (
                                     <SelectItem key={item.id} value={item.id} className="text-xs">
-                                      {capitalize(item.name)}
+                                      {capitalize(item.name)} - {capitalize(item.category)}
                                     </SelectItem>
                                   ))}
                                 </SelectContent>
@@ -796,7 +1021,6 @@ export default function ProcessPage() {
                                 placeholder="0"
                                 className="h-8 text-xs"
                                 min="0"
-                                max={selectedItem?.quantity || 999}
                                 value={row.quantity}
                                 onChange={(e) => {
                                   const newItems = [...processItems];
@@ -853,105 +1077,109 @@ export default function ProcessPage() {
             <DialogDescription>Transfer items from Heat Treatment to Factory location</DialogDescription>
           </DialogHeader>
           
-          <div className="space-y-4 py-4 max-h-96 overflow-y-auto">
+          <div className="space-y-2">
             {factoryTransferRows.map((row, index) => {
               const selectedItem = items.find(i => i.id === row.id);
+              const isExpanded = expandedRowIndex === index;
               const htBalance = selectedItem ? ((selectedItem as any).heatTreatmentBalance || 0) : 0;
+
               return (
-                <div
-                  key={index}
-                  className={`p-3 rounded-lg border transition-colors ${
-                    index === expandedRowIndex
-                      ? "border-blue-200 bg-blue-50"
-                      : "border-slate-200 bg-slate-50"
-                  }`}
-                >
-                  {index === expandedRowIndex ? (
-                    <div className="space-y-3">
+                <div key={index}>
+                  {!isExpanded ? (
+                    <div
+                      onClick={() => setExpandedRowIndex(index)}
+                      className="p-3 bg-slate-50 rounded-lg border border-slate-200 hover:bg-slate-100 cursor-pointer transition-colors flex items-center gap-2"
+                    >
+                      <span className="text-xs font-semibold text-slate-600 min-w-fit">
+                        Row {index + 1}:
+                      </span>
+                      <span className="text-xs font-medium text-slate-700 flex-1 min-w-0 truncate">
+                        {selectedItem ? capitalize(selectedItem.name) : "Select item"}
+                      </span>
+                      <span className="text-xs font-bold text-slate-700 flex-shrink-0">
+                        {row.quantity ? `${row.quantity}` : "0"} units
+                      </span>
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => setExpandedRowIndex(null)}
-                        className="w-full justify-between text-left h-auto p-2 cursor-pointer hover:bg-slate-100"
-                      >
-                        <span className="text-xs font-semibold text-slate-600">Row {index + 1}</span>
-                        <span className="text-xs font-bold text-slate-700">Collapse</span>
-                      </Button>
-                      <div className="space-y-2">
-                        <Label htmlFor={`factory-item-${index}`}>Select Item</Label>
-                        <Select
-                          value={row.id}
-                          onValueChange={(itemId) => {
-                            const newRows = [...factoryTransferRows];
-                            newRows[index].id = itemId;
-                            setFactoryTransferRows(newRows);
-                          }}
-                        >
-                          <SelectTrigger id={`factory-item-${index}`}>
-                            <SelectValue placeholder="Choose item" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {items.filter(item => ((item as any).heatTreatmentBalance || 0) > 0).map(item => (
-                              <SelectItem key={item.id} value={item.id}>
-                                {capitalize(item.name)} - {capitalize(item.category)} (HT: {((item as any).heatTreatmentBalance || 0)})
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      {selectedItem && (
-                        <>
-                          <div className="p-2 bg-blue-100 rounded text-sm text-blue-700 font-semibold">
-                            Available HT Balance: {htBalance} units
-                          </div>
-                          <div className="space-y-2">
-                            <Label htmlFor={`factory-qty-${index}`}>Quantity</Label>
-                            <Input
-                              id={`factory-qty-${index}`}
-                              type="number"
-                              placeholder="0"
-                              max={htBalance}
-                              min="0"
-                              value={row.quantity}
-                              onChange={(e) => {
-                                const newRows = [...factoryTransferRows];
-                                newRows[index].quantity = e.target.value;
-                                setFactoryTransferRows(newRows);
-                              }}
-                            />
-                          </div>
-                        </>
-                      )}
-                      <Button
-                        variant="destructive"
-                        size="sm"
-                        onClick={() => {
+                        className="h-6 w-6 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
+                        onClick={(e) => {
+                          e.stopPropagation();
                           const newRows = factoryTransferRows.filter((_, i) => i !== index);
                           setFactoryTransferRows(newRows.length === 0 ? [{ id: "", quantity: "" }] : newRows);
                         }}
-                        className="w-full text-xs"
                       >
-                        Remove Row
+                        <Trash2 className="h-3 w-3" />
                       </Button>
                     </div>
                   ) : (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setExpandedRowIndex(index)}
-                      className="w-full justify-between text-left h-auto p-2 cursor-pointer hover:bg-slate-200"
-                    >
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-semibold text-slate-600">Row {index + 1}:</span>
-                        <span className="text-xs font-medium text-slate-700">
-                          {selectedItem ? capitalize(selectedItem.name) : "Select item"}
+                    <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 space-y-3">
+                      {/* Row Header */}
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold text-slate-600">
+                          Row {index + 1} (Click to collapse)
                         </span>
-                        {selectedItem && (
-                          <span className="text-xs text-slate-500">({capitalize(selectedItem.category)})</span>
-                        )}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 w-6 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
+                          onClick={() => {
+                            const newRows = factoryTransferRows.filter((_, i) => i !== index);
+                            setFactoryTransferRows(newRows.length === 0 ? [{ id: "", quantity: "" }] : newRows);
+                          }}
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </Button>
                       </div>
-                      <span className="text-xs font-bold text-slate-700">{row.quantity ? `${row.quantity}` : "0"} units</span>
-                    </Button>
+
+                      {/* Select Item and Quantity */}
+                      <div className="grid grid-cols-3 gap-2">
+                        <div className="col-span-2">
+                          <Label className="text-xs mb-1 block font-semibold">Item *</Label>
+                          <Select
+                            value={row.id}
+                            onValueChange={(itemId) => {
+                              const newRows = [...factoryTransferRows];
+                              newRows[index].id = itemId;
+                              setFactoryTransferRows(newRows);
+                            }}
+                          >
+                            <SelectTrigger className="h-8 text-xs">
+                              <SelectValue placeholder="Select item" />
+                            </SelectTrigger>
+                            <SelectContent className="max-h-[250px]">
+                              {sortItems(items.filter(item => ((item as any).heatTreatmentBalance || 0) > 0)).map((item) => (
+                                <SelectItem key={item.id} value={item.id} className="text-xs">
+                                  {capitalize(item.name)} - {capitalize(item.category)} (HT: {((item as any).heatTreatmentBalance || 0)})
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div>
+                          <Label className="text-xs mb-1 block font-semibold">Qty *</Label>
+                          <Input
+                            type="number"
+                            placeholder="0"
+                            max={htBalance}
+                            min="0"
+                            value={row.quantity}
+                            onChange={(e) => {
+                              const newRows = [...factoryTransferRows];
+                              newRows[index].quantity = e.target.value;
+                              setFactoryTransferRows(newRows);
+                            }}
+                            className="h-8 text-xs"
+                          />
+                        </div>
+                      </div>
+
+                      {selectedItem && (
+                        <div className="p-2 bg-blue-50 rounded border border-blue-200 text-xs text-blue-700 font-semibold">
+                          Available HT Balance: {htBalance} units
+                        </div>
+                      )}
+                    </div>
                   )}
                 </div>
               );
@@ -1000,105 +1228,109 @@ export default function ProcessPage() {
             <DialogDescription>Transfer items from Factory to Office location</DialogDescription>
           </DialogHeader>
           
-          <div className="space-y-4 py-4 max-h-96 overflow-y-auto">
+          <div className="space-y-2">
             {officeTransferRows.map((row, index) => {
               const selectedItem = items.find(i => i.id === row.id);
+              const isExpanded = expandedRowIndex === index;
               const faBalance = selectedItem ? ((selectedItem as any).factoryBalance || 0) : 0;
+
               return (
-                <div
-                  key={index}
-                  className={`p-3 rounded-lg border transition-colors ${
-                    index === expandedRowIndex
-                      ? "border-green-200 bg-green-50"
-                      : "border-slate-200 bg-slate-50"
-                  }`}
-                >
-                  {index === expandedRowIndex ? (
-                    <div className="space-y-3">
+                <div key={index}>
+                  {!isExpanded ? (
+                    <div
+                      onClick={() => setExpandedRowIndex(index)}
+                      className="p-3 bg-slate-50 rounded-lg border border-slate-200 hover:bg-slate-100 cursor-pointer transition-colors flex items-center gap-2"
+                    >
+                      <span className="text-xs font-semibold text-slate-600 min-w-fit">
+                        Row {index + 1}:
+                      </span>
+                      <span className="text-xs font-medium text-slate-700 flex-1 min-w-0 truncate">
+                        {selectedItem ? capitalize(selectedItem.name) : "Select item"}
+                      </span>
+                      <span className="text-xs font-bold text-slate-700 flex-shrink-0">
+                        {row.quantity ? `${row.quantity}` : "0"} units
+                      </span>
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => setExpandedRowIndex(null)}
-                        className="w-full justify-between text-left h-auto p-2 cursor-pointer hover:bg-slate-100"
-                      >
-                        <span className="text-xs font-semibold text-slate-600">Row {index + 1}</span>
-                        <span className="text-xs font-bold text-slate-700">Collapse</span>
-                      </Button>
-                      <div className="space-y-2">
-                        <Label htmlFor={`office-item-${index}`}>Select Item</Label>
-                        <Select
-                          value={row.id}
-                          onValueChange={(itemId) => {
-                            const newRows = [...officeTransferRows];
-                            newRows[index].id = itemId;
-                            setOfficeTransferRows(newRows);
-                          }}
-                        >
-                          <SelectTrigger id={`office-item-${index}`}>
-                            <SelectValue placeholder="Choose item" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {items.filter(item => ((item as any).factoryBalance || 0) > 0).map(item => (
-                              <SelectItem key={item.id} value={item.id}>
-                                {capitalize(item.name)} - {capitalize(item.category)} (FA: {((item as any).factoryBalance || 0)})
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      {selectedItem && (
-                        <>
-                          <div className="p-2 bg-green-100 rounded text-sm text-green-700 font-semibold">
-                            Available FA Balance: {faBalance} units
-                          </div>
-                          <div className="space-y-2">
-                            <Label htmlFor={`office-qty-${index}`}>Quantity</Label>
-                            <Input
-                              id={`office-qty-${index}`}
-                              type="number"
-                              placeholder="0"
-                              max={faBalance}
-                              min="0"
-                              value={row.quantity}
-                              onChange={(e) => {
-                                const newRows = [...officeTransferRows];
-                                newRows[index].quantity = e.target.value;
-                                setOfficeTransferRows(newRows);
-                              }}
-                            />
-                          </div>
-                        </>
-                      )}
-                      <Button
-                        variant="destructive"
-                        size="sm"
-                        onClick={() => {
+                        className="h-6 w-6 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
+                        onClick={(e) => {
+                          e.stopPropagation();
                           const newRows = officeTransferRows.filter((_, i) => i !== index);
                           setOfficeTransferRows(newRows.length === 0 ? [{ id: "", quantity: "" }] : newRows);
                         }}
-                        className="w-full text-xs"
                       >
-                        Remove Row
+                        <Trash2 className="h-3 w-3" />
                       </Button>
                     </div>
                   ) : (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setExpandedRowIndex(index)}
-                      className="w-full justify-between text-left h-auto p-2 cursor-pointer hover:bg-slate-200"
-                    >
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-semibold text-slate-600">Row {index + 1}:</span>
-                        <span className="text-xs font-medium text-slate-700">
-                          {selectedItem ? capitalize(selectedItem.name) : "Select item"}
+                    <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 space-y-3">
+                      {/* Row Header */}
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold text-slate-600">
+                          Row {index + 1} (Click to collapse)
                         </span>
-                        {selectedItem && (
-                          <span className="text-xs text-slate-500">({capitalize(selectedItem.category)})</span>
-                        )}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 w-6 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
+                          onClick={() => {
+                            const newRows = officeTransferRows.filter((_, i) => i !== index);
+                            setOfficeTransferRows(newRows.length === 0 ? [{ id: "", quantity: "" }] : newRows);
+                          }}
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </Button>
                       </div>
-                      <span className="text-xs font-bold text-slate-700">{row.quantity ? `${row.quantity}` : "0"} units</span>
-                    </Button>
+
+                      {/* Select Item and Quantity */}
+                      <div className="grid grid-cols-3 gap-2">
+                        <div className="col-span-2">
+                          <Label className="text-xs mb-1 block font-semibold">Item *</Label>
+                          <Select
+                            value={row.id}
+                            onValueChange={(itemId) => {
+                              const newRows = [...officeTransferRows];
+                              newRows[index].id = itemId;
+                              setOfficeTransferRows(newRows);
+                            }}
+                          >
+                            <SelectTrigger className="h-8 text-xs">
+                              <SelectValue placeholder="Select item" />
+                            </SelectTrigger>
+                            <SelectContent className="max-h-[250px]">
+                              {sortItems(items.filter(item => ((item as any).factoryBalance || 0) > 0)).map((item) => (
+                                <SelectItem key={item.id} value={item.id} className="text-xs">
+                                  {capitalize(item.name)} - {capitalize(item.category)} (FA: {((item as any).factoryBalance || 0)})
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div>
+                          <Label className="text-xs mb-1 block font-semibold">Qty *</Label>
+                          <Input
+                            type="number"
+                            placeholder="0"
+                            max={faBalance}
+                            min="0"
+                            value={row.quantity}
+                            onChange={(e) => {
+                              const newRows = [...officeTransferRows];
+                              newRows[index].quantity = e.target.value;
+                              setOfficeTransferRows(newRows);
+                            }}
+                            className="h-8 text-xs"
+                          />
+                        </div>
+                      </div>
+
+                      {selectedItem && (
+                        <div className="p-2 bg-green-50 rounded border border-green-200 text-xs text-green-700 font-semibold">
+                          Available FA Balance: {faBalance} units
+                        </div>
+                      )}
+                    </div>
                   )}
                 </div>
               );

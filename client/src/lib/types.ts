@@ -49,6 +49,13 @@ export interface Transaction {
   transferId?: string; // Reference to transfer if created from a transfer
   salesId?: string; // Groups related sales transactions
   salesCompany?: string; // Company name for sales (CEC, AGW, BHP)
+  affectedBalance?: string; // Track which balance field was affected (heatTreatmentBalance, factoryBalance, officeBalance, etc)
+  previousHTBalance?: number; // Previous heat treatment balance
+  previousFABalance?: number; // Previous factory balance
+  previousOFBalance?: number; // Previous office balance
+  newHTBalance?: number; // New heat treatment balance
+  newFABalance?: number; // New factory balance
+  newOFBalance?: number; // New office balance
   user: {
     id: string;
     name: string;
