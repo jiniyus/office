@@ -55,6 +55,7 @@ export default function Stock() {
   const [isViewOnly, setIsViewOnly] = useState(false);
   const [advancedMode, setAdvancedMode] = useState(false);
   const [isBulkDialogOpen, setIsBulkDialogOpen] = useState(false);
+  const [isSalesDialogOpen, setIsSalesDialogOpen] = useState(false);
   const [expandedRowIndex, setExpandedRowIndex] = useState<number | null>(null);
   const [bulkTransactionRows, setBulkTransactionRows] = useState<Array<{
     id: string;
@@ -67,6 +68,14 @@ export default function Stock() {
     operation: "Add",
     locationId: "",
   }]);
+  const [salesRows, setSalesRows] = useState<Array<{
+    id: string;
+    quantity: string;
+  }>>([{
+    id: "",
+    quantity: "",
+  }]);
+  const [selectedSalesCompany, setSelectedSalesCompany] = useState<"CEC" | "AGW" | "BHP" | "">("");
   const [newProduct, setNewProduct] = useState({
     name: "",
     category: "",
@@ -103,6 +112,17 @@ export default function Stock() {
       }]);
     }
   }, [isBulkDialogOpen]);
+
+  // Reset sales rows when opening dialog
+  useEffect(() => {
+    if (isSalesDialogOpen && salesRows.length === 0) {
+      setSalesRows([{
+        id: "",
+        quantity: "",
+      }]);
+      setSelectedSalesCompany("");
+    }
+  }, [isSalesDialogOpen]);
   
   const { items, loading } = useStockItems();
   const { locations } = useLocations();
@@ -116,6 +136,17 @@ export default function Stock() {
 
   const getTotalBalance = (item: any) => {
     return ((item.heatTreatmentBalance || 0) + (item.factoryBalance || 0) + (item.officeBalance || 0));
+  };
+
+  const getDisplayBalance = (item: any) => {
+    if (filterByLocationBalance === 'heat_treatment') {
+      return ((item as any).heatTreatmentBalance || 0);
+    } else if (filterByLocationBalance === 'factory') {
+      return ((item as any).factoryBalance || 0);
+    } else if (filterByLocationBalance === 'office') {
+      return ((item as any).officeBalance || 0);
+    }
+    return getTotalBalance(item);
   };
 
   const filteredInventory = useMemo(() => {
@@ -396,6 +427,97 @@ export default function Stock() {
     }
   };
 
+  const handleSalesConfirm = async () => {
+    if (!selectedSalesCompany) {
+      toast({ variant: "destructive", title: "Error", description: "Please select a company" });
+      return;
+    }
+
+    if (salesRows.length === 0) {
+      toast({ variant: "destructive", title: "Error", description: "Please add at least one item to sell" });
+      return;
+    }
+
+    // Validate all rows
+    for (let i = 0; i < salesRows.length; i++) {
+      const row = salesRows[i];
+      if (!row.id || !row.quantity) {
+        toast({ variant: "destructive", title: "Error", description: `Row ${i + 1}: Please select item and quantity` });
+        return;
+      }
+      const qty = parseInt(row.quantity);
+      if (qty <= 0) {
+        toast({ variant: "destructive", title: "Error", description: `Row ${i + 1}: Quantity must be greater than 0` });
+        return;
+      }
+      const item = items.find(it => it.id === row.id);
+      if (!item) {
+        toast({ variant: "destructive", title: "Error", description: `Row ${i + 1}: Invalid item` });
+        return;
+      }
+      const ofBalance = (item as any).officeBalance || 0;
+      if (qty > ofBalance) {
+        toast({ variant: "destructive", title: "Error", description: `Row ${i + 1}: Cannot sell more than available office balance (${ofBalance})` });
+        return;
+      }
+    }
+
+    try {
+      setIsSubmitting(true);
+      const salesId = `sales-${Date.now()}`;
+      const transactionRecords = [];
+
+      for (const row of salesRows) {
+        const item = items.find(it => it.id === row.id)!;
+        const qty = parseInt(row.quantity);
+        const ofBalance = (item as any).officeBalance || 0;
+        const htBalance = (item as any).heatTreatmentBalance || 0;
+        const faBalance = (item as any).factoryBalance || 0;
+
+        const newOFBalance = Math.max(0, ofBalance - qty);
+        const newTotalQty = htBalance + faBalance + newOFBalance;
+
+        // Update stock - only deduct from office balance
+        await updateDoc(doc(db, "stock-items", item.id), {
+          officeBalance: newOFBalance,
+          quantity: newTotalQty,
+          lastUpdated: Timestamp.now()
+        });
+
+        // Record transaction
+        transactionRecords.push({
+          itemId: item.name,
+          category: item.category,
+          company: user?.company || "",
+          quantityChange: -qty,
+          previousBalance: ofBalance,
+          balance: newOFBalance,
+          locationId: null,
+          timestamp: Timestamp.now(),
+          type: 'sales',
+          salesId: salesId,
+          salesCompany: selectedSalesCompany,
+          user: { id: user?.uid || "", name: user?.displayName || "Unknown" }
+        });
+      }
+
+      // Save all transaction records
+      for (const record of transactionRecords) {
+        await addDoc(collection(db, "transactions"), record);
+      }
+
+      toast({ title: "Success", description: `Sale completed with ${salesRows.length} items to ${selectedSalesCompany}` });
+      setIsSalesDialogOpen(false);
+      setSalesRows([{ id: "", quantity: "" }]);
+      setSelectedSalesCompany("");
+    } catch (error) {
+      console.error("Error processing sale:", error);
+      toast({ variant: "destructive", title: "Error", description: "Failed to process sale" });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
 
 
   if (loading) {
@@ -430,15 +552,13 @@ export default function Stock() {
               </div>
             </div>
 
-            {advancedMode && (
-              <Button
-                className="w-full h-10 shadow-lg shadow-purple-600/20 bg-purple-600 hover:bg-purple-700"
-                onClick={() => setIsBulkDialogOpen(true)}
-                disabled={isViewOnly}
-              >
-                <Zap className="mr-2 h-4 w-4" /> Bulk Transaction
-              </Button>
-            )}
+            <Button
+              className="w-full h-10 shadow-lg shadow-green-600/20 bg-green-600 hover:bg-green-700"
+              onClick={() => setIsSalesDialogOpen(true)}
+              disabled={isViewOnly}
+            >
+              <Zap className="mr-2 h-4 w-4" /> Sales
+            </Button>
           </div>
         </div>
 
@@ -623,22 +743,27 @@ export default function Stock() {
                           <p className="text-sm font-semibold text-slate-700 mt-0.5">{capitalize(item.category)}</p>
                         </div>
                         <div className="flex items-center gap-1 flex-shrink-0">
-                          {/* Total Balance */}
+                          {/* Display Balance - location specific if filter active, total otherwise */}
                           <div className="bg-blue-600 text-white rounded font-bold px-2 py-0.5 text-xs flex items-center justify-center min-w-fit">
-                            {getTotalBalance(item)}
+                            {getDisplayBalance(item)}
                           </div>
-                          {/* HT Balance */}
-                          <div className="bg-blue-100 text-blue-700 rounded px-1.5 py-0.5 text-xs font-semibold min-w-fit">
-                            HT: {(item as any).heatTreatmentBalance || 0}
-                          </div>
-                          {/* FA Balance */}
-                          <div className="bg-blue-100 text-blue-700 rounded px-1.5 py-0.5 text-xs font-semibold min-w-fit">
-                            FA: {(item as any).factoryBalance || 0}
-                          </div>
-                          {/* OF Balance */}
-                          <div className="bg-blue-100 text-blue-700 rounded px-1.5 py-0.5 text-xs font-semibold min-w-fit">
-                            OF: {(item as any).officeBalance || 0}
-                          </div>
+                          {/* Show individual balances only if no location filter is active */}
+                          {!filterByLocationBalance && (
+                            <>
+                              {/* HT Balance */}
+                              <div className="bg-blue-100 text-blue-700 rounded px-1.5 py-0.5 text-xs font-semibold min-w-fit">
+                                HT: {(item as any).heatTreatmentBalance || 0}
+                              </div>
+                              {/* FA Balance */}
+                              <div className="bg-blue-100 text-blue-700 rounded px-1.5 py-0.5 text-xs font-semibold min-w-fit">
+                                FA: {(item as any).factoryBalance || 0}
+                              </div>
+                              {/* OF Balance */}
+                              <div className="bg-blue-100 text-blue-700 rounded px-1.5 py-0.5 text-xs font-semibold min-w-fit">
+                                OF: {(item as any).officeBalance || 0}
+                              </div>
+                            </>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -670,7 +795,7 @@ export default function Stock() {
                         <div className="flex items-end justify-between gap-4">
                           <span className="font-mono text-slate-700 font-bold">{capitalize(item.size || '') || 'N/A'}</span>
                           <div className="flex flex-col items-end gap-2">
-                            {/* Total Balance with Expandable */}
+                            {/* Balance with Expandable - shows location-specific if filter active, total otherwise */}
                             <Button
                               variant="ghost"
                               size="sm"
@@ -679,7 +804,7 @@ export default function Stock() {
                             >
                               <div className="flex items-center gap-2">
                                 <div className="bg-blue-600 text-white rounded font-bold px-3 py-1 flex items-center justify-center">
-                                  {getTotalBalance(item)}
+                                  {getDisplayBalance(item)}
                                 </div>
                                 {expandedBalanceId === item.id ? (
                                   <ChevronUp className="h-4 w-4 text-slate-400" />
@@ -1062,6 +1187,171 @@ export default function Stock() {
         </DialogContent>
       </Dialog>
 
+      {/* Sales Dialog */}
+      <Dialog open={isSalesDialogOpen} onOpenChange={setIsSalesDialogOpen}>
+        <DialogContent className="w-[95vw] max-w-2xl max-h-[85vh] overflow-y-auto p-4 sm:p-6">
+          <DialogHeader>
+            <DialogTitle>Sales</DialogTitle>
+            <DialogDescription>Record sales by adding items and selecting the selling company.</DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4 py-4">
+            {/* Company Selector */}
+            <div>
+              <Label htmlFor="sales-company" className="text-sm font-semibold">Selling Company *</Label>
+              <Select value={selectedSalesCompany} onValueChange={(value: any) => setSelectedSalesCompany(value)}>
+                <SelectTrigger id="sales-company" className="h-9">
+                  <SelectValue placeholder="Select company" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="CEC">CEC</SelectItem>
+                  <SelectItem value="AGW">AGW</SelectItem>
+                  <SelectItem value="BHP">BHP</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Sales Items */}
+            <div className="space-y-2">
+              <Label className="text-sm font-semibold">Items to Sell</Label>
+              {salesRows.map((row, index) => {
+                const selectedItem = row.id ? items.find(i => i.id === row.id) : null;
+                const ofBalance = selectedItem ? ((selectedItem as any).officeBalance || 0) : 0;
+                const isExpanded = expandedRowIndex === index;
+                
+                return (
+                  <div key={index}>
+                    {/* Collapsed View */}
+                    {!isExpanded ? (
+                      <div 
+                        onClick={() => setExpandedRowIndex(index)}
+                        className="p-3 bg-slate-50 rounded-lg border border-slate-200 hover:bg-slate-100 cursor-pointer transition-colors flex items-center gap-3"
+                      >
+                        <span className="text-xs font-semibold text-slate-600 min-w-fit">Row {index + 1}:</span>
+                        <span className="text-xs font-medium text-slate-700 flex-1 min-w-0 truncate">
+                          {selectedItem ? capitalize(selectedItem.name) : "Select item"}
+                        </span>
+                        <span className="text-xs font-bold text-slate-700 flex-shrink-0">
+                          {row.quantity ? `${row.quantity}` : "0"} units
+                        </span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 w-6 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const newRows = salesRows.filter((_, i) => i !== index);
+                            setSalesRows(newRows.length === 0 ? [{ id: "", quantity: "" }] : newRows);
+                          }}
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    ) : (
+                      /* Expanded View */
+                      <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 space-y-3">
+                        {/* Row Header */}
+                        <div className="flex items-center justify-between cursor-pointer" onClick={() => setExpandedRowIndex(null)}>
+                          <span className="text-xs font-semibold text-slate-600">Row {index + 1} (Click to collapse)</span>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 w-6 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const newRows = salesRows.filter((_, i) => i !== index);
+                              setSalesRows(newRows.length === 0 ? [{ id: "", quantity: "" }] : newRows);
+                            }}
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
+                        </div>
+
+                        {/* Select Item */}
+                        <div>
+                          <Label className="text-xs mb-1 block font-semibold">Item (Office Balance) *</Label>
+                          <Select value={row.id} onValueChange={(value) => {
+                            const newRows = [...salesRows];
+                            newRows[index] = { ...row, id: value };
+                            setSalesRows(newRows);
+                          }}>
+                            <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Select item" /></SelectTrigger>
+                            <SelectContent className="max-h-[250px]">
+                              {items.filter(item => ((item as any).officeBalance || 0) > 0).map((item) => (
+                                <SelectItem key={item.id} value={item.id} className="text-xs">
+                                  {capitalize(item.name)} - OF: {((item as any).officeBalance || 0)} units
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+
+                        {/* Quantity Input */}
+                        <div>
+                          <Label className="text-xs mb-1 block font-semibold">Quantity *</Label>
+                          <Input
+                            type="number"
+                            placeholder="0"
+                            className="h-8 text-xs"
+                            min="0"
+                            max={ofBalance}
+                            value={row.quantity}
+                            onChange={(e) => {
+                              const newRows = [...salesRows];
+                              newRows[index] = { ...row, quantity: e.target.value };
+                              setSalesRows(newRows);
+                            }}
+                          />
+                          {selectedItem && (
+                            <div className="text-xs text-slate-600 mt-1">
+                              Available: <span className="font-semibold">{ofBalance}</span> units
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+
+              {/* Add Row Button */}
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setExpandedRowIndex(null);
+                  setSalesRows([...salesRows, { id: "", quantity: "" }]);
+                }}
+                className="w-full border-dashed text-xs h-8"
+              >
+                <Plus className="mr-1 h-3 w-3" /> Add Row
+              </Button>
+            </div>
+          </div>
+
+          <DialogFooter className="gap-2 flex-col sm:flex-row">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setIsSalesDialogOpen(false);
+                setExpandedRowIndex(null);
+                setSalesRows([{ id: "", quantity: "" }]);
+                setSelectedSalesCompany("");
+              }}
+              disabled={isSubmitting}
+              className="text-xs h-9"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSalesConfirm}
+              disabled={isSubmitting}
+              className="bg-green-600 hover:bg-green-700 text-xs h-9"
+            >
+              {isSubmitting ? "Processing..." : "Complete Sale"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
     </Layout>
   );

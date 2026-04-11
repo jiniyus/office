@@ -1,7 +1,7 @@
 import { Layout } from "@/components/layout";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ArrowUpRight, ArrowDownLeft, Search, Trash2, Calendar, ChevronDown, ChevronRight } from "lucide-react";
+import { ArrowUpRight, ArrowDownLeft, Search, Trash2, Calendar, ChevronDown, ChevronRight, Filter } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useTransactions, useLocations } from "@/lib/firestore-hooks";
@@ -15,6 +15,11 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import {
   Dialog,
   DialogContent,
@@ -33,23 +38,51 @@ export default function HistoryPage() {
   const [selectedDate, setSelectedDate] = useState<string>("");
   const [expandedBulkId, setExpandedBulkId] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<any>(null);
+  const [selectedFilters, setSelectedFilters] = useState<string[]>([]);
+  const [expandedSalesFilter, setExpandedSalesFilter] = useState(false);
   const { toast } = useToast();
 
   const filteredTransactions = useMemo(() => {
-    if (!selectedDate) return transactions;
+    let result = transactions;
     
-    return transactions.filter(tx => {
-      const txDate = new Date(tx.timestamp).toISOString().split('T')[0];
-      return txDate === selectedDate;
-    });
-  }, [transactions, selectedDate]);
+    if (selectedDate) {
+      result = result.filter(tx => {
+        const txDate = new Date(tx.timestamp).toISOString().split('T')[0];
+        return txDate === selectedDate;
+      });
+    }
+    
+    if (selectedFilters.length > 0) {
+      result = result.filter(tx => {
+        if (selectedFilters.includes('heat_treatment') && tx.processId && tx.type === 'heat_treatment_created') {
+          return true;
+        }
+        if (selectedFilters.includes('transfer_factory') && tx.transferId && tx.type === 'factory_transfer_created') {
+          return true;
+        }
+        if (selectedFilters.includes('transfer_office') && tx.transferId && tx.type === 'office_transfer_created') {
+          return true;
+        }
+        const salesFilters = selectedFilters.filter(f => f.startsWith('sales:'));
+        if (salesFilters.length > 0 && tx.salesId) {
+          const companies = salesFilters.map(f => f.replace('sales:', ''));
+          return companies.includes(tx.salesCompany);
+        }
+        return false;
+      });
+    }
+    
+    return result;
+  }, [transactions, selectedDate, selectedFilters]);
 
   const handleDeleteTransaction = async (idOrBulkId: string, isBulkId: boolean = false) => {
     try {
       if (isBulkId) {
-        // Check if this is a bulkTransactionId or processId
+        // Check if this is a bulkTransactionId, processId, transferId, or salesId
         const allBulkTxs = filteredTransactions.filter(tx => tx.bulkTransactionId === idOrBulkId);
         const allProcessTxs = filteredTransactions.filter(tx => tx.processId === idOrBulkId);
+        const allTransferTxs = filteredTransactions.filter(tx => tx.transferId === idOrBulkId);
+        const allSalesTxs = filteredTransactions.filter(tx => tx.salesId === idOrBulkId);
         
         if (allBulkTxs.length > 0) {
           setDeleteConfirmId({
@@ -67,32 +100,70 @@ export default function HistoryPage() {
             itemCount: allProcessTxs.length,
             type: 'process'
           });
+        } else if (allTransferTxs.length > 0) {
+          setDeleteConfirmId({
+            id: allTransferTxs[0].id,
+            isBulkGroup: true,
+            transferId: idOrBulkId,
+            itemCount: allTransferTxs.length,
+            type: 'transfer'
+          });
+        } else if (allSalesTxs.length > 0) {
+          setDeleteConfirmId({
+            id: allSalesTxs[0].id,
+            isBulkGroup: true,
+            salesId: idOrBulkId,
+            itemCount: allSalesTxs.length,
+            type: 'sales'
+          });
         }
       } else {
-        // This is a transaction ID, check if it's part of a bulk or process transaction
-        const bulkTx = filteredTransactions.find(tx => tx.id === idOrBulkId);
+        // This is a transaction ID, check if it's part of a bulk, process, transfer, or sales group
+        const txById = filteredTransactions.find(tx => tx.id === idOrBulkId);
         
-        if (bulkTx?.bulkTransactionId) {
+        if (txById?.bulkTransactionId) {
           // This is part of a bulk transaction group
-          const allBulkTxs = filteredTransactions.filter(tx => tx.bulkTransactionId === bulkTx.bulkTransactionId);
+          const allBulkTxs = filteredTransactions.filter(tx => tx.bulkTransactionId === txById.bulkTransactionId);
           
           setDeleteConfirmId({
             id: idOrBulkId,
             isBulkGroup: true,
-            bulkTransactionId: bulkTx.bulkTransactionId,
+            bulkTransactionId: txById.bulkTransactionId,
             itemCount: allBulkTxs.length,
             type: 'bulk'
           });
-        } else if (bulkTx?.processId) {
+        } else if (txById?.processId) {
           // This is part of a process group
-          const allProcessTxs = filteredTransactions.filter(tx => tx.processId === bulkTx.processId);
+          const allProcessTxs = filteredTransactions.filter(tx => tx.processId === txById.processId);
           
           setDeleteConfirmId({
             id: idOrBulkId,
             isBulkGroup: true,
-            processId: bulkTx.processId,
+            processId: txById.processId,
             itemCount: allProcessTxs.length,
             type: 'process'
+          });
+        } else if (txById?.transferId) {
+          // This is part of a transfer group
+          const allTransferTxs = filteredTransactions.filter(tx => tx.transferId === txById.transferId);
+          
+          setDeleteConfirmId({
+            id: idOrBulkId,
+            isBulkGroup: true,
+            transferId: txById.transferId,
+            itemCount: allTransferTxs.length,
+            type: 'transfer'
+          });
+        } else if (txById?.salesId) {
+          // This is part of a sales group
+          const allSalesTxs = filteredTransactions.filter(tx => tx.salesId === txById.salesId);
+          
+          setDeleteConfirmId({
+            id: idOrBulkId,
+            isBulkGroup: true,
+            salesId: txById.salesId,
+            itemCount: allSalesTxs.length,
+            type: 'sales'
           });
         } else {
           // Single transaction
@@ -116,12 +187,20 @@ export default function HistoryPage() {
     try {
       if (deleteConfirmId.isBulkGroup) {
         // Get the appropriate transactions based on type
-        const relevantTxs = deleteConfirmId.type === 'bulk'
-          ? filteredTransactions.filter(tx => tx.bulkTransactionId === deleteConfirmId.bulkTransactionId)
-          : filteredTransactions.filter(tx => tx.processId === deleteConfirmId.processId);
+        let relevantTxs: any[] = [];
         
-        if (deleteOption === 'reverse') {
-          // Find all items and restore their previous balances
+        if (deleteConfirmId.type === 'bulk') {
+          relevantTxs = filteredTransactions.filter(tx => tx.bulkTransactionId === deleteConfirmId.bulkTransactionId);
+        } else if (deleteConfirmId.type === 'process') {
+          relevantTxs = filteredTransactions.filter(tx => tx.processId === deleteConfirmId.processId);
+        } else if (deleteConfirmId.type === 'transfer') {
+          relevantTxs = filteredTransactions.filter(tx => tx.transferId === deleteConfirmId.transferId);
+        } else if (deleteConfirmId.type === 'sales') {
+          relevantTxs = filteredTransactions.filter(tx => tx.salesId === deleteConfirmId.salesId);
+        }
+        
+        if (deleteOption === 'reverse' && (deleteConfirmId.type === 'bulk' || deleteConfirmId.type === 'process')) {
+          // Find all items and restore their previous balances (only for bulk and process, not for transfers or sales)
           const updatePromises = relevantTxs.map(tx => {
             // Get the item ID from itemId field
             const itemName = tx.itemId;
@@ -146,22 +225,34 @@ export default function HistoryPage() {
         await Promise.all(deletePromises);
 
         if (deleteOption === 'reverse') {
-          toast({
-            title: "Success",
-            description: `Reversed ${deleteConfirmId.type === 'bulk' ? 'bulk transaction' : 'process'} with ${relevantTxs.length} items`,
-          });
+          if (deleteConfirmId.type === 'transfer') {
+            toast({
+              title: "Success",
+              description: `Deleted ${relevantTxs.length} transfer record(s)`,
+            });
+          } else if (deleteConfirmId.type === 'sales') {
+            toast({
+              title: "Success",
+              description: `Deleted ${relevantTxs.length} sale record(s)`,
+            });
+          } else {
+            toast({
+              title: "Success",
+              description: `Reversed ${deleteConfirmId.type === 'bulk' ? 'bulk transaction' : 'process'} with ${relevantTxs.length} items`,
+            });
+          }
         } else {
           toast({
             title: "Success",
-            description: `Deleted ${deleteConfirmId.type === 'bulk' ? 'bulk transaction' : 'process'} log with ${relevantTxs.length} items`,
+            description: `Deleted ${deleteConfirmId.type === 'bulk' ? 'bulk transaction' : deleteConfirmId.type === 'process' ? 'process' : deleteConfirmId.type === 'transfer' ? 'transfer' : 'sale'} log with ${relevantTxs.length} items`,
           });
         }
       } else {
         // Delete single transaction
         const tx = filteredTransactions.find(t => t.id === deleteConfirmId.id);
         
-        if (deleteOption === 'reverse' && tx) {
-          // Restore previous balance
+        if (deleteOption === 'reverse' && tx && tx.type !== 'factory_transfer_created' && tx.type !== 'office_transfer_created') {
+          // Restore previous balance (not for transfers)
           const itemName = tx.itemId;
           const snapshot = await getDocs(
             query(collection(db, "stock-items"), where("name", "==", itemName))
@@ -203,6 +294,8 @@ export default function HistoryPage() {
   const groupBulkTransactions = (txs: any[]) => {
     const grouped: { [key: string]: any[] } = {};
     const processGrouped: { [key: string]: any[] } = {};
+    const transferGrouped: { [key: string]: any[] } = {};
+    const salesGrouped: { [key: string]: any[] } = {};
     const singles: any[] = [];
 
     // Sort by timestamp first (newest first)
@@ -223,6 +316,16 @@ export default function HistoryPage() {
           processGrouped[tx.processId] = [];
         }
         processGrouped[tx.processId].push(tx);
+      } else if (tx.transferId) {
+        if (!transferGrouped[tx.transferId]) {
+          transferGrouped[tx.transferId] = [];
+        }
+        transferGrouped[tx.transferId].push(tx);
+      } else if (tx.salesId) {
+        if (!salesGrouped[tx.salesId]) {
+          salesGrouped[tx.salesId] = [];
+        }
+        salesGrouped[tx.salesId].push(tx);
       } else {
         singles.push(tx);
       }
@@ -245,6 +348,27 @@ export default function HistoryPage() {
         transactions: group, 
         id: processId,
         timestamp: group[0].timestamp 
+      });
+    });
+    // Add transfer groups
+    Object.entries(transferGrouped).forEach(([transferId, group]) => {
+      const transferType = group[0].type === 'factory_transfer_created' ? 'factory_transfer' : 'office_transfer';
+      result.push({ 
+        type: 'transfer', 
+        transferType: transferType,
+        transactions: group, 
+        id: transferId,
+        timestamp: group[0].timestamp 
+      });
+    });
+    // Add sales groups
+    Object.entries(salesGrouped).forEach(([salesId, group]) => {
+      result.push({ 
+        type: 'sales', 
+        transactions: group, 
+        id: salesId,
+        timestamp: group[0].timestamp,
+        salesCompany: group[0].salesCompany
       });
     });
     // Then add singles
@@ -367,6 +491,140 @@ export default function HistoryPage() {
                 onChange={(e) => setSelectedDate(e.target.value)}
               />
             </div>
+            
+            {/* Filter Button */}
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-2 h-10 border-slate-200"
+                >
+                  <Filter className="h-4 w-4" />
+                  <span className="text-xs font-medium">Filter</span>
+                  {selectedFilters.length > 0 && (
+                    <Badge className="bg-blue-100 text-blue-700 h-5 rounded-full text-xs">
+                      {selectedFilters.length}
+                    </Badge>
+                  )}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-64 p-3" align="start">
+                <div className="space-y-3">
+                  <div>
+                    <div className="flex items-center justify-between mb-3">
+                      <h3 className="text-sm font-semibold text-slate-700">Filter By Type</h3>
+                      {selectedFilters.length > 0 && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 px-2 text-xs text-slate-500 hover:text-slate-700"
+                          onClick={() => setSelectedFilters([])}
+                        >
+                          Clear
+                        </Button>
+                      )}
+                    </div>
+                    <div className="space-y-2">
+                      {/* Heat Treatment */}
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={selectedFilters.includes('heat_treatment')}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedFilters([...selectedFilters, 'heat_treatment']);
+                            } else {
+                              setSelectedFilters(selectedFilters.filter(f => f !== 'heat_treatment'));
+                            }
+                          }}
+                          className="w-4 h-4 rounded border-slate-300 text-primary focus:ring-primary"
+                        />
+                        <span className="text-sm text-slate-600">Heat Treatment</span>
+                      </label>
+                      
+                      {/* Transfer to Factory */}
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={selectedFilters.includes('transfer_factory')}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedFilters([...selectedFilters, 'transfer_factory']);
+                            } else {
+                              setSelectedFilters(selectedFilters.filter(f => f !== 'transfer_factory'));
+                            }
+                          }}
+                          className="w-4 h-4 rounded border-slate-300 text-primary focus:ring-primary"
+                        />
+                        <span className="text-sm text-slate-600">Transfer to Factory</span>
+                      </label>
+                      
+                      {/* Transfer to Office */}
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={selectedFilters.includes('transfer_office')}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedFilters([...selectedFilters, 'transfer_office']);
+                            } else {
+                              setSelectedFilters(selectedFilters.filter(f => f !== 'transfer_office'));
+                            }
+                          }}
+                          className="w-4 h-4 rounded border-slate-300 text-primary focus:ring-primary"
+                        />
+                        <span className="text-sm text-slate-600">Transfer to Office</span>
+                      </label>
+                      
+                      {/* Sales */}
+                      <div className="border-t border-slate-200 pt-2 mt-2">
+                        <button
+                          onClick={() => setExpandedSalesFilter(!expandedSalesFilter)}
+                          className="flex items-center gap-2 w-full text-sm text-slate-600 hover:text-slate-700 font-medium"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedFilters.some(f => f.startsWith('sales:'))}
+                            onChange={() => {}}
+                            className="w-4 h-4 rounded border-slate-300 text-primary focus:ring-primary"
+                            onClick={(e) => e.stopPropagation()}
+                          />
+                          <span>Sales</span>
+                          <ChevronDown className={`h-3 w-3 ml-auto transition-transform ${
+                            expandedSalesFilter ? 'rotate-180' : ''
+                          }`} />
+                        </button>
+                        
+                        {/* Sales Company Options */}
+                        {expandedSalesFilter && (
+                          <div className="space-y-2 mt-2 ml-6">
+                            {['CEC', 'AGW', 'BHP'].map((company) => (
+                              <label key={company} className="flex items-center gap-2 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedFilters.includes(`sales:${company}`)}
+                                  onChange={(e) => {
+                                    if (e.target.checked) {
+                                      setSelectedFilters([...selectedFilters, `sales:${company}`]);
+                                    } else {
+                                      setSelectedFilters(selectedFilters.filter(f => f !== `sales:${company}`));
+                                    }
+                                  }}
+                                  className="w-4 h-4 rounded border-slate-300 text-primary focus:ring-primary"
+                                />
+                                <span className="text-sm text-slate-600">{company}</span>
+                              </label>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </PopoverContent>
+            </Popover>
+            
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="outline" size="sm" className="gap-2">
@@ -602,6 +860,209 @@ export default function HistoryPage() {
                                       </div>
                                       <div className="flex items-center gap-2 mt-1">
                                         <span className="text-xs text-slate-600">Before: <span className="font-semibold">{entry.previousBalance}</span></span>
+                                        <span className="text-xs text-slate-600">After: <span className="font-semibold">{entry.balance}</span></span>
+                                      </div>
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center gap-3">
+                                    <div className={`text-sm font-bold flex-shrink-0 ${isIncrease ? 'text-emerald-600' : 'text-red-600'}`}>
+                                      {isIncrease ? '+' : ''}{entry.quantityChange}
+                                    </div>
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      className="h-7 w-7 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
+                                      onClick={() => handleDeleteTransaction(entry.id)}
+                                    >
+                                      <Trash2 className="h-3 w-3" />
+                                    </Button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  } else if (item.type === 'transfer') {
+                    const transferTransactions = item.transactions;
+                    const isExpanded = expandedBulkId === item.id;
+                    const firstTx = transferTransactions[0];
+
+                    // Determine transfer type
+                    const transferType = item.transferType === 'factory_transfer' 
+                      ? 'FACTORY TRANSFER'
+                      : 'OFFICE TRANSFER';
+
+                    const badgeColor = item.transferType === 'factory_transfer'
+                      ? 'bg-blue-100 text-blue-700'
+                      : 'bg-green-100 text-green-700';
+
+                    return (
+                      <div key={item.id} className="border-b border-slate-100 last:border-b-0">
+                        {/* Transfer Group Header */}
+                        <div 
+                          className="p-3 hover:bg-slate-50 transition-colors cursor-pointer flex items-center gap-3"
+                          onClick={() => setExpandedBulkId(isExpanded ? null : item.id)}
+                        >
+                          <div className="flex-shrink-0">
+                            {isExpanded ? (
+                              <ChevronDown className="h-5 w-5 text-slate-400" />
+                            ) : (
+                              <ChevronRight className="h-5 w-5 text-slate-400" />
+                            )}
+                          </div>
+                          <Badge className={`${badgeColor} text-xs`}>{transferType}</Badge>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-semibold text-slate-900">
+                              {transferType} ({transferTransactions.length} items)
+                            </p>
+                            <div className="flex items-center gap-2 mt-1 flex-wrap">
+                              <span className="text-xs text-slate-500">
+                                <span className="font-medium text-slate-700">{firstTx.user.name}</span>
+                              </span>
+                              <span className="text-xs text-slate-400">
+                                {formatExactTime(firstTx.timestamp)}
+                              </span>
+                            </div>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 px-2 text-red-600 hover:text-red-700 hover:bg-red-50"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteTransaction(item.id, true);
+                            }}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+
+                        {/* Transfer Group Items */}
+                        {isExpanded && (
+                          <div className="bg-slate-50/50 divide-y divide-slate-100 border-t border-slate-100">
+                            {transferTransactions.map((entry) => {
+                              const isIncrease = entry.quantityChange > 0;
+                              return (
+                                <div key={entry.id} className="p-3 flex items-center justify-between gap-4 pl-12">
+                                  <div className="flex items-center gap-3 flex-1 min-w-0">
+                                    <div className={`
+                                      h-8 w-8 rounded-full flex items-center justify-center border flex-shrink-0 text-xs
+                                      ${isIncrease
+                                        ? 'bg-emerald-50 border-emerald-100 text-emerald-600' 
+                                        : 'bg-amber-50 border-amber-100 text-amber-600'}
+                                    `}>
+                                      {isIncrease ? <ArrowDownLeft className="h-3 w-3" /> : <ArrowUpRight className="h-3 w-3" />}
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                      <p className="text-sm font-semibold text-slate-900 truncate">
+                                        {capitalize(entry.itemId)}
+                                      </p>
+                                      <div className="flex items-center gap-2 flex-wrap mt-1">
+                                        <Badge variant="secondary" className="text-xs font-normal bg-slate-100 text-slate-600">
+                                          {capitalize(entry.category)}
+                                        </Badge>
+                                      </div>
+                                      <div className="flex items-center gap-2 mt-1">
+                                        <span className="text-xs text-slate-600">Before: <span className="font-semibold">{entry.previousBalance}</span></span>
+                                        <span className="text-xs text-slate-600">After: <span className="font-semibold">{entry.balance}</span></span>
+                                      </div>
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center gap-3">
+                                    <div className={`text-sm font-bold flex-shrink-0 ${isIncrease ? 'text-emerald-600' : 'text-red-600'}`}>
+                                      {isIncrease ? '+' : ''}{entry.quantityChange}
+                                    </div>
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      className="h-7 w-7 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
+                                      onClick={() => handleDeleteTransaction(entry.id)}
+                                    >
+                                      <Trash2 className="h-3 w-3" />
+                                    </Button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  } else if (item.type === 'sales') {
+                    const salesTransactions = item.transactions;
+                    const isExpanded = expandedBulkId === item.id;
+                    const firstTx = salesTransactions[0];
+
+                    return (
+                      <div key={item.id} className="border-b border-slate-100 last:border-b-0">
+                        {/* Sales Group Header */}
+                        <div 
+                          className="p-3 hover:bg-slate-50 transition-colors cursor-pointer flex items-center gap-3"
+                          onClick={() => setExpandedBulkId(isExpanded ? null : item.id)}
+                        >
+                          <div className="flex-shrink-0">
+                            {isExpanded ? (
+                              <ChevronDown className="h-5 w-5 text-slate-400" />
+                            ) : (
+                              <ChevronRight className="h-5 w-5 text-slate-400" />
+                            )}
+                          </div>
+                          <Badge className="bg-orange-100 text-orange-700 text-xs">SALES - {item.salesCompany}</Badge>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-semibold text-slate-900">
+                              Sold by {item.salesCompany} ({salesTransactions.length} items)
+                            </p>
+                            <div className="flex items-center gap-2 mt-1 flex-wrap">
+                              <span className="text-xs text-slate-500">
+                                <span className="font-medium text-slate-700">{firstTx.user.name}</span>
+                              </span>
+                              <span className="text-xs text-slate-400">
+                                {formatExactTime(firstTx.timestamp)}
+                              </span>
+                            </div>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 px-2 text-red-600 hover:text-red-700 hover:bg-red-50"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteTransaction(item.id, true);
+                            }}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+
+                        {/* Sales Group Items */}
+                        {isExpanded && (
+                          <div className="bg-slate-50/50 divide-y divide-slate-100 border-t border-slate-100">
+                            {salesTransactions.map((entry) => {
+                              const isIncrease = entry.quantityChange > 0;
+                              return (
+                                <div key={entry.id} className="p-3 flex items-center justify-between gap-4 pl-12">
+                                  <div className="flex items-center gap-3 flex-1 min-w-0">
+                                    <div className={`
+                                      h-8 w-8 rounded-full flex items-center justify-center border flex-shrink-0 text-xs
+                                      ${isIncrease
+                                        ? 'bg-emerald-50 border-emerald-100 text-emerald-600' 
+                                        : 'bg-amber-50 border-amber-100 text-amber-600'}
+                                    `}>
+                                      {isIncrease ? <ArrowDownLeft className="h-3 w-3" /> : <ArrowUpRight className="h-3 w-3" />}
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                      <p className="text-sm font-semibold text-slate-900 truncate">
+                                        {capitalize(entry.itemId)}
+                                      </p>
+                                      <div className="flex items-center gap-2 flex-wrap mt-1">
+                                        <Badge variant="secondary" className="text-xs font-normal bg-slate-100 text-slate-600">
+                                          {capitalize(entry.category)}
+                                        </Badge>
+                                      </div>
+                                      <div className="flex items-center gap-2 mt-1">
+                                        <span className="text-xs text-slate-600">Office Before: <span className="font-semibold">{entry.previousBalance}</span></span>
                                         <span className="text-xs text-slate-600">After: <span className="font-semibold">{entry.balance}</span></span>
                                       </div>
                                     </div>

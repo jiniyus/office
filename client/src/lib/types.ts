@@ -43,9 +43,12 @@ export interface Transaction {
   balance: number; // Balance after transaction
   locationId?: string; // Location reference
   timestamp: Date;
-  type: 'adjustment' | 'creation' | 'transfer' | 'bulk' | 'heat_treatment_created' | 'factory_transfer_created' | 'office_transfer_created'; // Track if it's a new item creation, quantity adjustment, transfer, bulk, or process
+  type: 'adjustment' | 'creation' | 'transfer' | 'bulk' | 'heat_treatment_created' | 'factory_transfer_created' | 'office_transfer_created' | 'sales'; // Track if it's a new item creation, quantity adjustment, transfer, bulk, process, or sales
   bulkTransactionId?: string; // Groups related bulk transactions
   processId?: string; // Reference to process if created from a process
+  transferId?: string; // Reference to transfer if created from a transfer
+  salesId?: string; // Groups related sales transactions
+  salesCompany?: string; // Company name for sales (CEC, AGW, BHP)
   user: {
     id: string;
     name: string;

@@ -375,6 +375,7 @@ export default function ProcessPage() {
 
     try {
       setIsSubmitting(true);
+      const factoryTransferId = `transfer-factory-${Date.now()}`;
 
       for (const row of factoryTransferRows) {
         const item = items.find(it => it.id === row.id);
@@ -385,7 +386,7 @@ export default function ProcessPage() {
         const faBalance = (item as any).factoryBalance || 0;
         const ofBalance = (item as any).officeBalance || 0;
 
-        const newHTBalance = htBalance - qty;
+        const newHTBalance = Math.max(0, htBalance - qty);
         const newFABalance = faBalance + qty;
 
         const stockItemRef = doc(db, "stock-items", item.id);
@@ -407,6 +408,7 @@ export default function ProcessPage() {
           locationId: null,
           timestamp: Timestamp.now(),
           type: 'factory_transfer_created',
+          transferId: factoryTransferId,
           user: { id: user?.uid || "", name: user?.displayName || "Unknown" }
         });
       }
@@ -466,6 +468,7 @@ export default function ProcessPage() {
 
     try {
       setIsSubmitting(true);
+      const officeTransferId = `transfer-office-${Date.now()}`;
 
       for (const row of officeTransferRows) {
         const item = items.find(it => it.id === row.id);
@@ -476,7 +479,7 @@ export default function ProcessPage() {
         const faBalance = (item as any).factoryBalance || 0;
         const ofBalance = (item as any).officeBalance || 0;
 
-        const newFABalance = faBalance - qty;
+        const newFABalance = Math.max(0, faBalance - qty);
         const newOFBalance = ofBalance + qty;
 
         const stockItemRef = doc(db, "stock-items", item.id);
@@ -498,6 +501,7 @@ export default function ProcessPage() {
           locationId: null,
           timestamp: Timestamp.now(),
           type: 'office_transfer_created',
+          transferId: officeTransferId,
           user: { id: user?.uid || "", name: user?.displayName || "Unknown" }
         });
       }
@@ -859,12 +863,20 @@ export default function ProcessPage() {
                   className={`p-3 rounded-lg border transition-colors ${
                     index === expandedRowIndex
                       ? "border-blue-200 bg-blue-50"
-                      : "border-slate-200 bg-slate-50 cursor-pointer hover:bg-slate-100"
+                      : "border-slate-200 bg-slate-50"
                   }`}
-                  onClick={() => setExpandedRowIndex(index === expandedRowIndex ? null : index)}
                 >
                   {index === expandedRowIndex ? (
                     <div className="space-y-3">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setExpandedRowIndex(null)}
+                        className="w-full justify-between text-left h-auto p-2 cursor-pointer hover:bg-slate-100"
+                      >
+                        <span className="text-xs font-semibold text-slate-600">Row {index + 1}</span>
+                        <span className="text-xs font-bold text-slate-700">Collapse</span>
+                      </Button>
                       <div className="space-y-2">
                         <Label htmlFor={`factory-item-${index}`}>Select Item</Label>
                         <Select
@@ -881,7 +893,7 @@ export default function ProcessPage() {
                           <SelectContent>
                             {items.filter(item => ((item as any).heatTreatmentBalance || 0) > 0).map(item => (
                               <SelectItem key={item.id} value={item.id}>
-                                {capitalize(item.name)} - {capitalize(item.category)}
+                                {capitalize(item.name)} - {capitalize(item.category)} (HT: {((item as any).heatTreatmentBalance || 0)})
                               </SelectItem>
                             ))}
                           </SelectContent>
@@ -899,6 +911,7 @@ export default function ProcessPage() {
                               type="number"
                               placeholder="0"
                               max={htBalance}
+                              min="0"
                               value={row.quantity}
                               onChange={(e) => {
                                 const newRows = [...factoryTransferRows];
@@ -922,13 +935,23 @@ export default function ProcessPage() {
                       </Button>
                     </div>
                   ) : (
-                    <div className="flex justify-between items-center">
-                      <span className="text-xs font-semibold text-slate-600">Row {index + 1}:</span>
-                      <span className="text-xs font-medium text-slate-700">
-                        {selectedItem ? capitalize(selectedItem.name) : "Select item"}
-                      </span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setExpandedRowIndex(index)}
+                      className="w-full justify-between text-left h-auto p-2 cursor-pointer hover:bg-slate-200"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-semibold text-slate-600">Row {index + 1}:</span>
+                        <span className="text-xs font-medium text-slate-700">
+                          {selectedItem ? capitalize(selectedItem.name) : "Select item"}
+                        </span>
+                        {selectedItem && (
+                          <span className="text-xs text-slate-500">({capitalize(selectedItem.category)})</span>
+                        )}
+                      </div>
                       <span className="text-xs font-bold text-slate-700">{row.quantity ? `${row.quantity}` : "0"} units</span>
-                    </div>
+                    </Button>
                   )}
                 </div>
               );
@@ -939,7 +962,10 @@ export default function ProcessPage() {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setFactoryTransferRows([...factoryTransferRows, { id: "", quantity: "" }])}
+              onClick={() => {
+                setExpandedRowIndex(null);
+                setFactoryTransferRows([...factoryTransferRows, { id: "", quantity: "" }]);
+              }}
               className="text-xs h-9"
             >
               + Add Row
@@ -984,12 +1010,20 @@ export default function ProcessPage() {
                   className={`p-3 rounded-lg border transition-colors ${
                     index === expandedRowIndex
                       ? "border-green-200 bg-green-50"
-                      : "border-slate-200 bg-slate-50 cursor-pointer hover:bg-slate-100"
+                      : "border-slate-200 bg-slate-50"
                   }`}
-                  onClick={() => setExpandedRowIndex(index === expandedRowIndex ? null : index)}
                 >
                   {index === expandedRowIndex ? (
                     <div className="space-y-3">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setExpandedRowIndex(null)}
+                        className="w-full justify-between text-left h-auto p-2 cursor-pointer hover:bg-slate-100"
+                      >
+                        <span className="text-xs font-semibold text-slate-600">Row {index + 1}</span>
+                        <span className="text-xs font-bold text-slate-700">Collapse</span>
+                      </Button>
                       <div className="space-y-2">
                         <Label htmlFor={`office-item-${index}`}>Select Item</Label>
                         <Select
@@ -1006,7 +1040,7 @@ export default function ProcessPage() {
                           <SelectContent>
                             {items.filter(item => ((item as any).factoryBalance || 0) > 0).map(item => (
                               <SelectItem key={item.id} value={item.id}>
-                                {capitalize(item.name)} - {capitalize(item.category)}
+                                {capitalize(item.name)} - {capitalize(item.category)} (FA: {((item as any).factoryBalance || 0)})
                               </SelectItem>
                             ))}
                           </SelectContent>
@@ -1024,6 +1058,7 @@ export default function ProcessPage() {
                               type="number"
                               placeholder="0"
                               max={faBalance}
+                              min="0"
                               value={row.quantity}
                               onChange={(e) => {
                                 const newRows = [...officeTransferRows];
@@ -1047,13 +1082,23 @@ export default function ProcessPage() {
                       </Button>
                     </div>
                   ) : (
-                    <div className="flex justify-between items-center">
-                      <span className="text-xs font-semibold text-slate-600">Row {index + 1}:</span>
-                      <span className="text-xs font-medium text-slate-700">
-                        {selectedItem ? capitalize(selectedItem.name) : "Select item"}
-                      </span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setExpandedRowIndex(index)}
+                      className="w-full justify-between text-left h-auto p-2 cursor-pointer hover:bg-slate-200"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-semibold text-slate-600">Row {index + 1}:</span>
+                        <span className="text-xs font-medium text-slate-700">
+                          {selectedItem ? capitalize(selectedItem.name) : "Select item"}
+                        </span>
+                        {selectedItem && (
+                          <span className="text-xs text-slate-500">({capitalize(selectedItem.category)})</span>
+                        )}
+                      </div>
                       <span className="text-xs font-bold text-slate-700">{row.quantity ? `${row.quantity}` : "0"} units</span>
-                    </div>
+                    </Button>
                   )}
                 </div>
               );
@@ -1064,7 +1109,10 @@ export default function ProcessPage() {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setOfficeTransferRows([...officeTransferRows, { id: "", quantity: "" }])}
+              onClick={() => {
+                setExpandedRowIndex(null);
+                setOfficeTransferRows([...officeTransferRows, { id: "", quantity: "" }]);
+              }}
               className="text-xs h-9"
             >
               + Add Row

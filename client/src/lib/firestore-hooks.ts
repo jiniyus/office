@@ -93,6 +93,9 @@ export function useTransactions(limit: number = 50) {
             type: data.type || 'adjustment',
             bulkTransactionId: data.bulkTransactionId,
             processId: data.processId,
+            transferId: data.transferId,
+            salesId: data.salesId,
+            salesCompany: data.salesCompany,
             user: data.user || { id: "", name: "Unknown" }
           };
         });
