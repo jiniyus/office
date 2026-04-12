@@ -363,6 +363,14 @@ export default function HistoryPage() {
     }
   };
 
+  const sortItemsByName = (items: any[]) => {
+    return [...items].sort((a, b) => {
+      const nameA = a.itemId.toLowerCase();
+      const nameB = b.itemId.toLowerCase();
+      return nameA.localeCompare(nameB);
+    });
+  };
+
   const groupBulkTransactions = (txs: any[]) => {
     const grouped: { [key: string]: any[] } = {};
     const processGrouped: { [key: string]: any[] } = {};
@@ -786,7 +794,7 @@ export default function HistoryPage() {
                         {/* Bulk Transaction Items */}
                         {isExpanded && (
                           <div className="bg-slate-50/50 divide-y divide-slate-100 border-t border-slate-100">
-                            {bulkTransactions.map((entry) => {
+                            {sortItemsByName(bulkTransactions).map((entry) => {
                               const isIncrease = entry.quantityChange > 0;
                               const location = entry.locationId ? locations.find(l => l.id === entry.locationId) : null;
                               return (
@@ -902,7 +910,7 @@ export default function HistoryPage() {
                         {/* Process Group Items */}
                         {isExpanded && (
                           <div className="bg-slate-50/50 divide-y divide-slate-100 border-t border-slate-100">
-                            {processTransactions.map((entry) => {
+                            {sortItemsByName(processTransactions).map((entry) => {
                               const isIncrease = entry.quantityChange > 0;
                               const location = entry.locationId ? locations.find(l => l.id === entry.locationId) : null;
                               return (
@@ -1014,7 +1022,7 @@ export default function HistoryPage() {
                         {/* Transfer Group Items */}
                         {isExpanded && (
                           <div className="bg-slate-50/50 divide-y divide-slate-100 border-t border-slate-100">
-                            {transferTransactions.map((entry) => {
+                            {sortItemsByName(transferTransactions).map((entry) => {
                               const isIncrease = entry.quantityChange > 0;
                               return (
                                 <div key={entry.id} className="p-3 flex items-center justify-between gap-4 pl-12">
@@ -1111,7 +1119,7 @@ export default function HistoryPage() {
                         {/* Sales Group Items */}
                         {isExpanded && (
                           <div className="bg-slate-50/50 divide-y divide-slate-100 border-t border-slate-100">
-                            {salesTransactions.map((entry) => {
+                            {sortItemsByName(salesTransactions).map((entry) => {
                               const isIncrease = entry.quantityChange > 0;
                               return (
                                 <div key={entry.id} className="p-3 flex items-center justify-between gap-4 pl-12">

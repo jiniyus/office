@@ -83,10 +83,10 @@ export default function ProcessPage() {
       const catA = a.category.toLowerCase();
       const catB = b.category.toLowerCase();
       
-      const nameCompare = nameA.localeCompare(nameB, undefined, { numeric: true });
+      const nameCompare = nameA.localeCompare(nameB);
       if (nameCompare !== 0) return nameCompare;
       
-      return catA.localeCompare(catB, undefined, { numeric: true });
+      return catA.localeCompare(catB);
     });
   };
 
@@ -401,19 +401,26 @@ export default function ProcessPage() {
     try {
       setIsSubmitting(true);
       const factoryTransferId = `transfer-factory-${Date.now()}`;
-      const affectedProcessIds = new Set<string>();
-
+      
+      // Build a map of all deductions needed: itemId -> quantity to deduct
+      const deductionMap = new Map<string, number>();
       for (const row of factoryTransferRows) {
-        const item = items.find(it => it.id === row.id);
+        const qty = parseInt(row.quantity);
+        const current = deductionMap.get(row.id) ?? 0;
+        deductionMap.set(row.id, current + qty);
+      }
+
+      // For each item being deducted, apply FIFO logic once
+      for (const [itemId, totalQtyToDeduct] of deductionMap) {
+        const item = items.find(it => it.id === itemId);
         if (!item) continue;
 
-        const qty = parseInt(row.quantity);
         const htBalance = (item as any).heatTreatmentBalance || 0;
         const faBalance = (item as any).factoryBalance || 0;
         const ofBalance = (item as any).officeBalance || 0;
 
-        const newHTBalance = Math.max(0, htBalance - qty);
-        const newFABalance = faBalance + qty;
+        const newHTBalance = Math.max(0, htBalance - totalQtyToDeduct);
+        const newFABalance = faBalance + totalQtyToDeduct;
 
         const stockItemRef = doc(db, "stock-items", item.id);
         await updateDoc(stockItemRef, {
@@ -423,35 +430,41 @@ export default function ProcessPage() {
           lastUpdated: Timestamp.now(),
         });
 
-        // Update heat treatment processes in FIFO order
-        const htProcesses = processes
-          .filter(p => p.processType === "heat_treatment" && p.items.some(pi => pi.itemId === item.id))
-          .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+        // Get fresh processes from Firestore (not stale React state)
+        const processesSnapshot = await getDocs(query(collection(db, "processes")));
+        const freshProcesses = processesSnapshot.docs.map(docSnap => ({
+          id: docSnap.id,
+          ...docSnap.data()
+        }));
 
-        let remainingQtyToDeduct = qty;
+        // Update heat treatment processes in FIFO order
+        const htProcesses = freshProcesses
+          .filter(p => p.processType === "heat_treatment" && p.items.some((pi: any) => pi.itemId === itemId))
+          .sort((a: any, b: any) => a.createdAt.toMillis() - b.createdAt.toMillis());
+
+        let remainingQtyToDeduct = totalQtyToDeduct;
         
         for (const htProcess of htProcesses) {
           if (remainingQtyToDeduct <= 0) break;
           
-          affectedProcessIds.add(htProcess.id);
-          const itemIndex = htProcess.items.findIndex(pi => pi.itemId === item.id);
+          const itemIndex = (htProcess as any).items.findIndex((pi: any) => pi.itemId === itemId);
           if (itemIndex === -1) continue;
           
-          const currentQty = htProcess.items[itemIndex].quantity;
+          const currentQty = (htProcess as any).items[itemIndex].quantity;
           const deductAmount = Math.min(currentQty, remainingQtyToDeduct);
           remainingQtyToDeduct -= deductAmount;
           const newQty = currentQty - deductAmount;
           
           // Update or delete the process
           if (newQty === 0) {
-            const updatedItems = htProcess.items.filter((_, idx) => idx !== itemIndex);
+            const updatedItems = (htProcess as any).items.filter((_: any, idx: number) => idx !== itemIndex);
             if (updatedItems.length === 0) {
               await deleteDoc(doc(db, "processes", htProcess.id));
             } else {
               await updateDoc(doc(db, "processes", htProcess.id), { items: updatedItems });
             }
           } else {
-            const updatedItems = htProcess.items.map((pi, idx) => 
+            const updatedItems = (htProcess as any).items.map((pi: any, idx: number) => 
               idx === itemIndex ? { ...pi, quantity: newQty } : pi
             );
             await updateDoc(doc(db, "processes", htProcess.id), { items: updatedItems });
@@ -463,7 +476,7 @@ export default function ProcessPage() {
           itemId: item.name,
           category: item.category,
           company: user?.company || "",
-          quantityChange: qty,
+          quantityChange: totalQtyToDeduct,
           previousBalance: htBalance,
           balance: newHTBalance,
           locationId: null,
@@ -481,62 +494,8 @@ export default function ProcessPage() {
         });
       }
 
-      // Rebuild processes state with proper FIFO deduction tracking
-      const affectedByItem = new Map<string, number>(); // itemId -> total to deduct
-      
-      for (const row of factoryTransferRows) {
-        const current = affectedByItem.get(row.id) ?? 0;
-        affectedByItem.set(row.id, current + (parseInt(row.quantity) || 0));
-      }
-
-      // Track globally how much we've deducted from each item across ALL processes
-      const globalDeducted = new Map<string, number>();
-
-      const updatedProcesses = processes
-        .filter(p => !affectedProcessIds.has(p.id) || p.processType !== "heat_treatment")
-        .concat(
-          Array.from(affectedProcessIds)
-            .map(id => processes.find(p => p.id === id && p.processType === "heat_treatment"))
-            .filter((p): p is typeof processes[0] => p !== null)
-            .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
-            .flatMap(p => {
-              // For this process, deduct from items in FIFO order
-              let currentItems = [...p.items];
-              
-              // Process each item in this batch
-              const deductedThisBatch = new Map<string, number>();
-              
-              for (const item of currentItems) {
-                const toDeductTotal = affectedByItem.get(item.itemId) ?? 0;
-                const alreadyDeductedGlobally = globalDeducted.get(item.itemId) ?? 0;
-                const remainingToDeduct = toDeductTotal - alreadyDeductedGlobally;
-                
-                if (remainingToDeduct > 0) {
-                  const deductAmount = Math.min(item.quantity, remainingToDeduct);
-                  deductedThisBatch.set(item.itemId, (deductedThisBatch.get(item.itemId) ?? 0) + deductAmount);
-                }
-              }
-
-              // Update global deduced amounts
-              for (const [itemId, amount] of deductedThisBatch) {
-                globalDeducted.set(itemId, (globalDeducted.get(itemId) ?? 0) + amount);
-              }
-
-              // Apply deductions to this process
-              currentItems = currentItems
-                .map(it => {
-                  const deducted = deductedThisBatch.get(it.itemId) ?? 0;
-                  return deducted > 0 
-                    ? { ...it, quantity: it.quantity - deducted }
-                    : it;
-                })
-                .filter(it => it.quantity > 0);
-
-              return currentItems.length > 0 ? [{ ...p, items: currentItems }] : [];
-            })
-        );
-
-      setProcesses(updatedProcesses);
+      // Don't update local state - Firestore updates above will trigger the real-time listener
+      // This ensures single source of truth and prevents race conditions
 
       toast({
         title: "Success",
@@ -594,19 +553,27 @@ export default function ProcessPage() {
     try {
       setIsSubmitting(true);
       const officeTransferId = `transfer-office-${Date.now()}`;
-      const affectedProcessIds = new Set<string>();
-
+      
+      // Build a map of all deductions needed: itemId -> quantity to deduct
+      const deductionMap = new Map<string, number>();
       for (const row of officeTransferRows) {
-        const item = items.find(it => it.id === row.id);
+        const qty = parseInt(row.quantity);
+        const current = deductionMap.get(row.id) ?? 0;
+        deductionMap.set(row.id, current + qty);
+      }
+
+      // For each item being deducted, there's no HT deduction for office transfer
+      // Office just updates the balances
+      for (const [itemId, totalQtyToDeduct] of deductionMap) {
+        const item = items.find(it => it.id === itemId);
         if (!item) continue;
 
-        const qty = parseInt(row.quantity);
         const htBalance = (item as any).heatTreatmentBalance || 0;
         const faBalance = (item as any).factoryBalance || 0;
         const ofBalance = (item as any).officeBalance || 0;
 
-        const newFABalance = Math.max(0, faBalance - qty);
-        const newOFBalance = ofBalance + qty;
+        const newFABalance = Math.max(0, faBalance - totalQtyToDeduct);
+        const newOFBalance = ofBalance + totalQtyToDeduct;
 
         const stockItemRef = doc(db, "stock-items", item.id);
         await updateDoc(stockItemRef, {
@@ -616,47 +583,12 @@ export default function ProcessPage() {
           lastUpdated: Timestamp.now(),
         });
 
-        // Update factory processes in FIFO order
-        const faProcesses = processes
-          .filter(p => p.processType === "factory" && p.items.some(pi => pi.itemId === item.id))
-          .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
-
-        let remainingQtyToDeduct = qty;
-        
-        for (const faProcess of faProcesses) {
-          if (remainingQtyToDeduct <= 0) break;
-          
-          affectedProcessIds.add(faProcess.id);
-          const itemIndex = faProcess.items.findIndex(pi => pi.itemId === item.id);
-          if (itemIndex === -1) continue;
-          
-          const currentQty = faProcess.items[itemIndex].quantity;
-          const deductAmount = Math.min(currentQty, remainingQtyToDeduct);
-          remainingQtyToDeduct -= deductAmount;
-          const newQty = currentQty - deductAmount;
-          
-          // Update or delete the process
-          if (newQty === 0) {
-            const updatedItems = faProcess.items.filter((_, idx) => idx !== itemIndex);
-            if (updatedItems.length === 0) {
-              await deleteDoc(doc(db, "processes", faProcess.id));
-            } else {
-              await updateDoc(doc(db, "processes", faProcess.id), { items: updatedItems });
-            }
-          } else {
-            const updatedItems = faProcess.items.map((pi, idx) => 
-              idx === itemIndex ? { ...pi, quantity: newQty } : pi
-            );
-            await updateDoc(doc(db, "processes", faProcess.id), { items: updatedItems });
-          }
-        }
-
         // Record transaction
         await addDoc(collection(db, "transactions"), {
           itemId: item.name,
           category: item.category,
           company: user?.company || "",
-          quantityChange: qty,
+          quantityChange: totalQtyToDeduct,
           previousBalance: faBalance,
           balance: newFABalance,
           locationId: null,
@@ -674,62 +606,8 @@ export default function ProcessPage() {
         });
       }
 
-      // Rebuild processes state with proper FIFO deduction tracking
-      const affectedByItem = new Map<string, number>(); // itemId -> total to deduct
-      
-      for (const row of officeTransferRows) {
-        const current = affectedByItem.get(row.id) ?? 0;
-        affectedByItem.set(row.id, current + (parseInt(row.quantity) || 0));
-      }
-
-      // Track globally how much we've deducted from each item across ALL processes
-      const globalDeducted = new Map<string, number>();
-
-      const updatedProcesses = processes
-        .filter(p => !affectedProcessIds.has(p.id) || p.processType !== "factory")
-        .concat(
-          Array.from(affectedProcessIds)
-            .map(id => processes.find(p => p.id === id && p.processType === "factory"))
-            .filter((p): p is typeof processes[0] => p !== null)
-            .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
-            .flatMap(p => {
-              // For this process, deduct from items in FIFO order
-              let currentItems = [...p.items];
-              
-              // Process each item in this batch
-              const deductedThisBatch = new Map<string, number>();
-              
-              for (const item of currentItems) {
-                const toDeductTotal = affectedByItem.get(item.itemId) ?? 0;
-                const alreadyDeductedGlobally = globalDeducted.get(item.itemId) ?? 0;
-                const remainingToDeduct = toDeductTotal - alreadyDeductedGlobally;
-                
-                if (remainingToDeduct > 0) {
-                  const deductAmount = Math.min(item.quantity, remainingToDeduct);
-                  deductedThisBatch.set(item.itemId, (deductedThisBatch.get(item.itemId) ?? 0) + deductAmount);
-                }
-              }
-
-              // Update global deduced amounts
-              for (const [itemId, amount] of deductedThisBatch) {
-                globalDeducted.set(itemId, (globalDeducted.get(itemId) ?? 0) + amount);
-              }
-
-              // Apply deductions to this process
-              currentItems = currentItems
-                .map(it => {
-                  const deducted = deductedThisBatch.get(it.itemId) ?? 0;
-                  return deducted > 0 
-                    ? { ...it, quantity: it.quantity - deducted }
-                    : it;
-                })
-                .filter(it => it.quantity > 0);
-
-              return currentItems.length > 0 ? [{ ...p, items: currentItems }] : [];
-            })
-        );
-
-      setProcesses(updatedProcesses);
+      // Don't update local state - Firestore updates above will trigger the real-time listener
+      // This ensures single source of truth and prevents race conditions
 
       toast({
         title: "Success",

@@ -3,6 +3,11 @@
 
 @custom-variant dark (&:is(.dark *));
 
+html {
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+}
+
 @theme inline {
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
@@ -132,4 +137,18 @@
   h1, h2, h3, h4, h5, h6 {
     @apply font-heading tracking-tight;
   }
+}
+
+/* Disable sonner toast animations */
+[data-sonner-toaster] {
+  --toast-duration: 100ms !important;
+}
+
+[data-sonner-toast] {
+  animation: none !important;
+  opacity: 1 !important;
+}
+
+[data-sonner-toast].front {
+  animation: none !important;
 }

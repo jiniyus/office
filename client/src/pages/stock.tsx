@@ -137,10 +137,10 @@ export default function Stock() {
       const catA = a.category.toLowerCase();
       const catB = b.category.toLowerCase();
       
-      const nameCompare = nameA.localeCompare(nameB, undefined, { numeric: true });
+      const nameCompare = nameA.localeCompare(nameB);
       if (nameCompare !== 0) return nameCompare;
       
-      return catA.localeCompare(catB, undefined, { numeric: true });
+      return catA.localeCompare(catB);
     });
   };
 
