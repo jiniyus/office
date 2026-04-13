@@ -114,7 +114,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   );
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-dvh bg-background">
       {/* Mobile Header */}
       <div className="lg:hidden flex items-center justify-between p-4 border-b bg-white">
         <span className="font-bold text-lg">StockPro</span>
@@ -130,14 +130,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
         </Sheet>
       </div>
 
-      <div className="flex h-screen overflow-hidden">
+      <div className="flex min-h-[calc(100dvh-65px)] lg:h-screen lg:min-h-0 lg:overflow-hidden">
         {/* Desktop Sidebar */}
         <div className="hidden lg:block w-72 flex-shrink-0">
           <SidebarContent />
         </div>
 
         {/* Main Content */}
-        <main className="flex-1 overflow-auto bg-slate-50/50">
+        <main className="flex-1 overflow-visible lg:overflow-auto bg-slate-50/50">
           <div className="container max-w-7xl mx-auto p-4 lg:p-8">
             {children}
           </div>

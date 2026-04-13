@@ -27,6 +27,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
+import { SearchableSelect } from "@/components/ui/searchable-select";
 import { useStockItems, useLocations } from "@/lib/firestore-hooks";
 import { Spinner } from "@/components/ui/spinner";
 import { useAuth } from "@/lib/auth";
@@ -1369,20 +1370,19 @@ export default function Stock() {
                         {/* Select Item */}
                         <div>
                           <Label className="text-xs mb-1 block font-semibold">Item (Office Balance) *</Label>
-                          <Select value={row.id} onValueChange={(value) => {
-                            const newRows = [...salesRows];
-                            newRows[index] = { ...row, id: value };
-                            setSalesRows(newRows);
-                          }}>
-                            <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Select item" /></SelectTrigger>
-                            <SelectContent className="max-h-[250px]">
-                              {sortItems(items.filter(item => ((item as any).officeBalance || 0) > 0)).map((item) => (
-                                <SelectItem key={item.id} value={item.id} className="text-xs">
-                                  {capitalize(item.name)} - OF: {((item as any).officeBalance || 0)} units
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
+                          <SearchableSelect
+                            value={row.id}
+                            onValueChange={(value) => {
+                              const newRows = [...salesRows];
+                              newRows[index] = { ...row, id: value };
+                              setSalesRows(newRows);
+                            }}
+                            placeholder="Select item"
+                            items={sortItems(items.filter(item => ((item as any).officeBalance || 0) > 0)).map((item) => ({
+                              id: item.id,
+                              label: `${capitalize(item.name)} - OF: ${((item as any).officeBalance || 0)} units`,
+                            }))}
+                          />
                         </div>
 
                         {/* Quantity Input */}

@@ -13,18 +13,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
+import { SearchableSelect } from "@/components/ui/searchable-select";
 import { useStockItems } from "@/lib/firestore-hooks";
 import { Spinner } from "@/components/ui/spinner";
 import { useAuth } from "@/lib/auth";
-import { collection, addDoc, Timestamp, deleteDoc, doc, updateDoc, getDocs, query, where, onSnapshot } from "firebase/firestore";
+import { collection, addDoc, Timestamp, deleteDoc, doc, updateDoc, getDocs, query, where, onSnapshot, getDoc } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useToast } from "@/hooks/use-toast";
 import { capitalize } from "@/lib/utils";
@@ -51,6 +45,37 @@ interface ProcessData {
     id: string;
     name: string;
   };
+}
+
+interface ProcessFirestoreItem {
+  itemId: string;
+  itemName: string;
+  category: string;
+  quantity: number;
+}
+
+interface ProcessFirestoreData {
+  id: string;
+  processType: "heat_treatment" | "factory_transfer" | "office_transfer";
+  items: ProcessFirestoreItem[];
+  createdAt: Timestamp;
+}
+
+interface ProcessHistoryTransaction {
+  id: string;
+  itemId: string;
+  category: string;
+  quantityChange: number;
+  type: string;
+}
+
+interface ProcessStockSnapshot {
+  id: string;
+  name: string;
+  category: string;
+  heatTreatmentBalance: number;
+  factoryBalance: number;
+  officeBalance: number;
 }
 
 export default function ProcessPage() {
@@ -313,6 +338,98 @@ export default function ProcessPage() {
       const processToDelete = processes.find(p => p.id === processId);
       if (!processToDelete) return;
 
+      if (processToDelete.processType === "heat_treatment") {
+        const [processSnapshot, processTxSnapshot, stockItemsSnapshot] = await Promise.all([
+          getDoc(doc(db, "processes", processId)),
+          getDocs(query(collection(db, "transactions"), where("processId", "==", processId))),
+          getDocs(
+            user?.company
+              ? query(collection(db, "stock-items"), where("company", "==", user.company))
+              : query(collection(db, "stock-items"))
+          ),
+        ]);
+
+        const processTransactions: ProcessHistoryTransaction[] = processTxSnapshot.docs
+          .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as ProcessHistoryTransaction))
+          .filter((tx) => tx.type === "heat_treatment_created");
+
+        const currentProcessItems: ProcessFirestoreItem[] = processSnapshot.exists()
+          ? ((processSnapshot.data().items ?? []) as ProcessFirestoreItem[])
+          : [];
+
+        const getItemKey = (itemName: string, category: string) =>
+          `${itemName.toLowerCase()}::${category.toLowerCase()}`;
+
+        const originalQtyByKey = new Map<string, number>();
+        for (const tx of processTransactions) {
+          const itemKey = getItemKey(tx.itemId, tx.category);
+          const currentQty = originalQtyByKey.get(itemKey) ?? 0;
+          originalQtyByKey.set(itemKey, currentQty + Math.max(0, tx.quantityChange || 0));
+        }
+
+        const remainingQtyByKey = new Map<string, number>();
+        for (const item of currentProcessItems) {
+          const itemKey = getItemKey(item.itemName, item.category);
+          const currentQty = remainingQtyByKey.get(itemKey) ?? 0;
+          remainingQtyByKey.set(itemKey, currentQty + (item.quantity || 0));
+        }
+
+        const stockItemsByKey = new Map<string, ProcessStockSnapshot>();
+        stockItemsSnapshot.docs.forEach((docSnap) => {
+          const data = docSnap.data();
+          const stockItem: ProcessStockSnapshot = {
+            id: docSnap.id,
+            name: data.name,
+            category: data.category,
+            heatTreatmentBalance: data.heatTreatmentBalance || 0,
+            factoryBalance: data.factoryBalance || 0,
+            officeBalance: data.officeBalance || 0,
+          };
+
+          stockItemsByKey.set(getItemKey(stockItem.name, stockItem.category), stockItem);
+        });
+
+        for (const [itemKey, originalQty] of Array.from(originalQtyByKey.entries())) {
+          const stockItem = stockItemsByKey.get(itemKey);
+          if (!stockItem) continue;
+
+          const remainingInHT = remainingQtyByKey.get(itemKey) ?? 0;
+          const qtyAlreadyTransferredDownstream = Math.max(0, originalQty - remainingInHT);
+          const nextHTBalance = Math.max(0, stockItem.heatTreatmentBalance - remainingInHT);
+
+          let remainingCascadeQty = qtyAlreadyTransferredDownstream;
+          const officeDeduction = Math.min(stockItem.officeBalance, remainingCascadeQty);
+          const nextOFBalance = stockItem.officeBalance - officeDeduction;
+          remainingCascadeQty -= officeDeduction;
+
+          const factoryDeduction = Math.min(stockItem.factoryBalance, remainingCascadeQty);
+          const nextFABalance = stockItem.factoryBalance - factoryDeduction;
+
+          await updateDoc(doc(db, "stock-items", stockItem.id), {
+            heatTreatmentBalance: nextHTBalance,
+            factoryBalance: nextFABalance,
+            officeBalance: nextOFBalance,
+            quantity: nextHTBalance + nextFABalance + nextOFBalance,
+            lastUpdated: Timestamp.now(),
+          });
+        }
+
+        await Promise.all(
+          processTransactions.map((tx) => deleteDoc(doc(db, "transactions", tx.id)))
+        );
+
+        if (processSnapshot.exists()) {
+          await deleteDoc(doc(db, "processes", processId));
+        }
+
+        setProcesses(processes.filter(p => p.id !== processId));
+        toast({
+          title: "Success",
+          description: "Process deleted and history reversed",
+        });
+        return;
+      }
+
       // Revert stock balances for each item in the process
       for (const item of processToDelete.items) {
         const stockItem = items.find(si => si.id === item.itemId);
@@ -332,7 +449,7 @@ export default function ProcessPage() {
 
         // Calculate new total quantity
         const allBalances = {
-          heat_treatment: processToDelete.processType === 'heat_treatment' ? revertedBalance : (stockItem as any).heatTreatmentBalance || 0,
+          heat_treatment: (stockItem as any).heatTreatmentBalance || 0,
           factory_transfer: processToDelete.processType === 'factory_transfer' ? revertedBalance : (stockItem as any).factoryBalance || 0,
           office_transfer: processToDelete.processType === 'office_transfer' ? revertedBalance : (stockItem as any).officeBalance || 0,
         };
@@ -349,6 +466,8 @@ export default function ProcessPage() {
 
       // Delete the process
       await deleteDoc(doc(db, "processes", processId));
+      const processTxSnapshot = await getDocs(query(collection(db, "transactions"), where("processId", "==", processId)));
+      await Promise.all(processTxSnapshot.docs.map((txDoc) => deleteDoc(doc(db, "transactions", txDoc.id))));
       setProcesses(processes.filter(p => p.id !== processId));
       toast({
         title: "Success",
@@ -411,7 +530,7 @@ export default function ProcessPage() {
       }
 
       // For each item being deducted, apply FIFO logic once
-      for (const [itemId, totalQtyToDeduct] of deductionMap) {
+      for (const [itemId, totalQtyToDeduct] of Array.from(deductionMap.entries())) {
         const item = items.find(it => it.id === itemId);
         if (!item) continue;
 
@@ -432,10 +551,16 @@ export default function ProcessPage() {
 
         // Get fresh processes from Firestore (not stale React state)
         const processesSnapshot = await getDocs(query(collection(db, "processes")));
-        const freshProcesses = processesSnapshot.docs.map(docSnap => ({
-          id: docSnap.id,
-          ...docSnap.data()
-        }));
+        const freshProcesses: ProcessFirestoreData[] = processesSnapshot.docs.map((docSnap) => {
+          const data = docSnap.data();
+
+          return {
+            id: docSnap.id,
+            processType: data.processType,
+            items: data.items ?? [],
+            createdAt: data.createdAt,
+          } as ProcessFirestoreData;
+        });
 
         // Update heat treatment processes in FIFO order
         const htProcesses = freshProcesses
@@ -564,7 +689,7 @@ export default function ProcessPage() {
 
       // For each item being deducted, there's no HT deduction for office transfer
       // Office just updates the balances
-      for (const [itemId, totalQtyToDeduct] of deductionMap) {
+      for (const [itemId, totalQtyToDeduct] of Array.from(deductionMap.entries())) {
         const item = items.find(it => it.id === itemId);
         if (!item) continue;
 
@@ -872,25 +997,19 @@ export default function ProcessPage() {
                           <div className="grid grid-cols-3 gap-2">
                             <div className="col-span-2">
                               <Label className="text-xs mb-1 block font-semibold">Item *</Label>
-                              <Select
+                              <SearchableSelect
                                 value={row.id}
                                 onValueChange={(value) => {
                                   const newItems = [...processItems];
                                   newItems[index] = { ...row, id: value };
                                   setProcessItems(newItems);
                                 }}
-                              >
-                                <SelectTrigger className="h-8 text-xs">
-                                  <SelectValue placeholder="Select item" />
-                                </SelectTrigger>
-                                <SelectContent className="max-h-[250px]">
-                                  {sortItems(items).map((item) => (
-                                    <SelectItem key={item.id} value={item.id} className="text-xs">
-                                      {capitalize(item.name)} - {capitalize(item.category)}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
+                                placeholder="Select item"
+                                items={sortItems(items).map((item) => ({
+                                  id: item.id,
+                                  label: `${capitalize(item.name)} - ${capitalize(item.category)}`,
+                                }))}
+                              />
                             </div>
                             <div>
                               <Label className="text-xs mb-1 block font-semibold">Qty *</Label>
@@ -1014,25 +1133,19 @@ export default function ProcessPage() {
                       <div className="grid grid-cols-3 gap-2">
                         <div className="col-span-2">
                           <Label className="text-xs mb-1 block font-semibold">Item *</Label>
-                          <Select
+                          <SearchableSelect
                             value={row.id}
                             onValueChange={(itemId) => {
                               const newRows = [...factoryTransferRows];
                               newRows[index].id = itemId;
                               setFactoryTransferRows(newRows);
                             }}
-                          >
-                            <SelectTrigger className="h-8 text-xs">
-                              <SelectValue placeholder="Select item" />
-                            </SelectTrigger>
-                            <SelectContent className="max-h-[250px]">
-                              {sortItems(items.filter(item => ((item as any).heatTreatmentBalance || 0) > 0)).map((item) => (
-                                <SelectItem key={item.id} value={item.id} className="text-xs">
-                                  {capitalize(item.name)} - {capitalize(item.category)} (HT: {((item as any).heatTreatmentBalance || 0)})
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
+                            placeholder="Select item"
+                            items={sortItems(items.filter(item => ((item as any).heatTreatmentBalance || 0) > 0)).map((item) => ({
+                              id: item.id,
+                              label: `${capitalize(item.name)} - ${capitalize(item.category)} (HT: ${((item as any).heatTreatmentBalance || 0)})`,
+                            }))}
+                          />
                         </div>
                         <div>
                           <Label className="text-xs mb-1 block font-semibold">Qty *</Label>
@@ -1165,25 +1278,19 @@ export default function ProcessPage() {
                       <div className="grid grid-cols-3 gap-2">
                         <div className="col-span-2">
                           <Label className="text-xs mb-1 block font-semibold">Item *</Label>
-                          <Select
+                          <SearchableSelect
                             value={row.id}
                             onValueChange={(itemId) => {
                               const newRows = [...officeTransferRows];
                               newRows[index].id = itemId;
                               setOfficeTransferRows(newRows);
                             }}
-                          >
-                            <SelectTrigger className="h-8 text-xs">
-                              <SelectValue placeholder="Select item" />
-                            </SelectTrigger>
-                            <SelectContent className="max-h-[250px]">
-                              {sortItems(items.filter(item => ((item as any).factoryBalance || 0) > 0)).map((item) => (
-                                <SelectItem key={item.id} value={item.id} className="text-xs">
-                                  {capitalize(item.name)} - {capitalize(item.category)} (FA: {((item as any).factoryBalance || 0)})
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
+                            placeholder="Select item"
+                            items={sortItems(items.filter(item => ((item as any).factoryBalance || 0) > 0)).map((item) => ({
+                              id: item.id,
+                              label: `${capitalize(item.name)} - ${capitalize(item.category)} (FA: ${((item as any).factoryBalance || 0)})`,
+                            }))}
+                          />
                         </div>
                         <div>
                           <Label className="text-xs mb-1 block font-semibold">Qty *</Label>

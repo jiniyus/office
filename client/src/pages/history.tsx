@@ -29,18 +29,138 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { db } from "@/lib/firebase";
-import { collection, query, where, getDocs, deleteDoc, doc, Timestamp, updateDoc } from "firebase/firestore";
+import { collection, query, where, getDocs, deleteDoc, doc, Timestamp, updateDoc, getDoc } from "firebase/firestore";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/lib/auth";
+
+interface HistoryProcessItem {
+  itemId: string;
+  itemName: string;
+  category: string;
+  quantity: number;
+}
+
+interface HistoryStockItem {
+  id: string;
+  name: string;
+  category: string;
+  quantity: number;
+  heatTreatmentBalance: number;
+  factoryBalance: number;
+  officeBalance: number;
+}
+
+interface HistoryProcessTransaction {
+  id: string;
+  itemId: string;
+  category: string;
+  quantityChange: number;
+  type: string;
+}
 
 export default function HistoryPage() {
   const { transactions, loading } = useTransactions();
   const { locations } = useLocations();
+  const { user } = useAuth();
   const [selectedDate, setSelectedDate] = useState<string>("");
   const [expandedBulkId, setExpandedBulkId] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<any>(null);
   const [selectedFilters, setSelectedFilters] = useState<string[]>([]);
   const [expandedSalesFilter, setExpandedSalesFilter] = useState(false);
   const { toast } = useToast();
+
+  const getItemKey = (itemName: string, category: string) =>
+    `${itemName.toLowerCase()}::${category.toLowerCase()}`;
+
+  const reverseHeatTreatmentProcess = async (processId: string) => {
+    const [processSnapshot, processTxSnapshot, stockItemsSnapshot] = await Promise.all([
+      getDoc(doc(db, "processes", processId)),
+      getDocs(query(collection(db, "transactions"), where("processId", "==", processId))),
+      getDocs(
+        user?.company
+          ? query(collection(db, "stock-items"), where("company", "==", user.company))
+          : query(collection(db, "stock-items"))
+      ),
+    ]);
+
+    const processTransactions: HistoryProcessTransaction[] = processTxSnapshot.docs
+      .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as HistoryProcessTransaction))
+      .filter((tx) => tx.type === "heat_treatment_created");
+
+    if (processTransactions.length === 0) {
+      return 0;
+    }
+
+    const currentProcessItems: HistoryProcessItem[] = processSnapshot.exists()
+      ? ((processSnapshot.data().items ?? []) as HistoryProcessItem[])
+      : [];
+
+    const originalQtyByKey = new Map<string, number>();
+    for (const tx of processTransactions) {
+      const itemKey = getItemKey(tx.itemId, tx.category);
+      const currentQty = originalQtyByKey.get(itemKey) ?? 0;
+      originalQtyByKey.set(itemKey, currentQty + Math.max(0, tx.quantityChange || 0));
+    }
+
+    const remainingQtyByKey = new Map<string, number>();
+    for (const item of currentProcessItems) {
+      const itemKey = getItemKey(item.itemName, item.category);
+      const currentQty = remainingQtyByKey.get(itemKey) ?? 0;
+      remainingQtyByKey.set(itemKey, currentQty + (item.quantity || 0));
+    }
+
+    const stockItemsByKey = new Map<string, HistoryStockItem>();
+    stockItemsSnapshot.docs.forEach((docSnap) => {
+      const data = docSnap.data();
+      const stockItem: HistoryStockItem = {
+        id: docSnap.id,
+        name: data.name,
+        category: data.category,
+        quantity: data.quantity || 0,
+        heatTreatmentBalance: data.heatTreatmentBalance || 0,
+        factoryBalance: data.factoryBalance || 0,
+        officeBalance: data.officeBalance || 0,
+      };
+
+      stockItemsByKey.set(getItemKey(stockItem.name, stockItem.category), stockItem);
+    });
+
+    for (const [itemKey, originalQty] of Array.from(originalQtyByKey.entries())) {
+      const stockItem = stockItemsByKey.get(itemKey);
+      if (!stockItem) continue;
+
+      const remainingInHT = remainingQtyByKey.get(itemKey) ?? 0;
+      const qtyAlreadyTransferredDownstream = Math.max(0, originalQty - remainingInHT);
+
+      const nextHTBalance = Math.max(0, stockItem.heatTreatmentBalance - remainingInHT);
+
+      let remainingCascadeQty = qtyAlreadyTransferredDownstream;
+      const officeDeduction = Math.min(stockItem.officeBalance, remainingCascadeQty);
+      const nextOFBalance = stockItem.officeBalance - officeDeduction;
+      remainingCascadeQty -= officeDeduction;
+
+      const factoryDeduction = Math.min(stockItem.factoryBalance, remainingCascadeQty);
+      const nextFABalance = stockItem.factoryBalance - factoryDeduction;
+
+      await updateDoc(doc(db, "stock-items", stockItem.id), {
+        heatTreatmentBalance: nextHTBalance,
+        factoryBalance: nextFABalance,
+        officeBalance: nextOFBalance,
+        quantity: nextHTBalance + nextFABalance + nextOFBalance,
+        lastUpdated: Timestamp.now(),
+      });
+    }
+
+    if (processSnapshot.exists()) {
+      await deleteDoc(doc(db, "processes", processId));
+    }
+
+    await Promise.all(
+      processTransactions.map((tx: any) => deleteDoc(doc(db, "transactions", tx.id)))
+    );
+
+    return processTransactions.length;
+  };
 
   const filteredTransactions = useMemo(() => {
     let result = transactions;
@@ -66,7 +186,7 @@ export default function HistoryPage() {
         const salesFilters = selectedFilters.filter(f => f.startsWith('sales:'));
         if (salesFilters.length > 0 && tx.salesId) {
           const companies = salesFilters.map(f => f.replace('sales:', ''));
-          return companies.includes(tx.salesCompany);
+          return tx.salesCompany ? companies.includes(tx.salesCompany) : false;
         }
         return false;
       });
@@ -74,6 +194,17 @@ export default function HistoryPage() {
     
     return result;
   }, [transactions, selectedDate, selectedFilters]);
+
+  const canReverseDelete = deleteConfirmId
+    ? deleteConfirmId.isBulkGroup
+      ? deleteConfirmId.type !== "transfer"
+      : (() => {
+          const tx = filteredTransactions.find(t => t.id === deleteConfirmId.id);
+          return tx
+            ? tx.type !== "factory_transfer_created" && tx.type !== "office_transfer_created"
+            : true;
+        })()
+    : false;
 
   const handleDeleteTransaction = async (idOrBulkId: string, isBulkId: boolean = false) => {
     try {
@@ -199,6 +330,16 @@ export default function HistoryPage() {
           relevantTxs = filteredTransactions.filter(tx => tx.salesId === deleteConfirmId.salesId);
         }
         
+        if (deleteOption === 'reverse' && deleteConfirmId.type === 'process' && deleteConfirmId.processId) {
+          const reversedCount = await reverseHeatTreatmentProcess(deleteConfirmId.processId);
+          toast({
+            title: "Success",
+            description: `Reversed process with ${reversedCount} items`,
+          });
+          setDeleteConfirmId(null);
+          return;
+        }
+
         if (deleteOption === 'reverse' && (deleteConfirmId.type === 'bulk' || deleteConfirmId.type === 'process' || deleteConfirmId.type === 'transfer' || deleteConfirmId.type === 'sales')) {
           // Find all items and restore their previous balances
           const updatePromises = relevantTxs.map(tx => {
@@ -1269,16 +1410,18 @@ export default function HistoryPage() {
                 <strong>Choose an action:</strong>
               </p>
               <div className="space-y-2">
-                <Button
-                  variant="outline"
-                  className="w-full justify-start text-left h-auto py-3 px-4"
-                  onClick={() => executeDelete('reverse')}
-                >
-                  <div className="flex flex-col gap-1">
-                    <span className="font-semibold text-slate-900">Reverse Changes</span>
-                    <span className="text-xs text-slate-600">Undo the stock adjustment and restore previous quantity</span>
-                  </div>
-                </Button>
+                {canReverseDelete && (
+                  <Button
+                    variant="outline"
+                    className="w-full justify-start text-left h-auto py-3 px-4"
+                    onClick={() => executeDelete('reverse')}
+                  >
+                    <div className="flex flex-col gap-1">
+                      <span className="font-semibold text-slate-900">Reverse Changes</span>
+                      <span className="text-xs text-slate-600">Undo the stock adjustment and restore previous quantity</span>
+                    </div>
+                  </Button>
+                )}
                 <Button
                   variant="outline"
                   className="w-full justify-start text-left h-auto py-3 px-4"
