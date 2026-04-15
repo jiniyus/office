@@ -21,6 +21,7 @@ export function SearchableSelect({
   const [open, setOpen] = React.useState(false)
   const [searchValue, setSearchValue] = React.useState("")
   const inputRef = React.useRef<HTMLInputElement>(null)
+  const scrollRef = React.useRef<HTMLDivElement>(null)
   const selectedLabel = items.find(item => item.id === value)?.label || ""
 
   React.useEffect(() => {
@@ -32,6 +33,18 @@ export function SearchableSelect({
     }, 0)
 
     return () => window.clearTimeout(focusTimer)
+  }, [open])
+
+  React.useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+
+    const handleTouchMove = (e: TouchEvent) => {
+      e.stopPropagation()
+    }
+
+    el.addEventListener("touchmove", handleTouchMove, { passive: true })
+    return () => el.removeEventListener("touchmove", handleTouchMove)
   }, [open])
 
   const filteredItems = React.useMemo(() => {
@@ -93,12 +106,14 @@ export function SearchableSelect({
         </div>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] p-0">
-        <div 
+        <div
+          ref={scrollRef}
           className="w-full bg-popover text-popover-foreground rounded-md border border-input"
           style={{
             height: '200px',
             overflow: 'auto',
-            WebkitOverflowScrolling: 'touch'
+            WebkitOverflowScrolling: 'touch',
+            overscrollBehavior: 'contain',
           }}
         >
           {filteredItems.length === 0 ? (
