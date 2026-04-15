@@ -1,5 +1,4 @@
 import * as React from "react"
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { ChevronsUpDown, Check } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -21,35 +20,37 @@ export function SearchableSelect({
   const [open, setOpen] = React.useState(false)
   const [searchValue, setSearchValue] = React.useState("")
   const inputRef = React.useRef<HTMLInputElement>(null)
-  const scrollRef = React.useRef<HTMLDivElement>(null)
+  const containerRef = React.useRef<HTMLDivElement>(null)
   const selectedLabel = items.find(item => item.id === value)?.label || ""
 
   React.useEffect(() => {
     if (!open) return
-
     const focusTimer = window.setTimeout(() => {
       inputRef.current?.focus()
       inputRef.current?.select()
     }, 0)
-
     return () => window.clearTimeout(focusTimer)
   }, [open])
 
   React.useEffect(() => {
-    const el = scrollRef.current
-    if (!el) return
-
-    const handleTouchMove = (e: TouchEvent) => {
-      e.stopPropagation()
+    if (!open) return
+    const handleOutsideClick = (e: MouseEvent | TouchEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false)
+        setSearchValue("")
+      }
     }
-
-    el.addEventListener("touchmove", handleTouchMove, { passive: true })
-    return () => el.removeEventListener("touchmove", handleTouchMove)
+    document.addEventListener("mousedown", handleOutsideClick)
+    document.addEventListener("touchstart", handleOutsideClick)
+    return () => {
+      document.removeEventListener("mousedown", handleOutsideClick)
+      document.removeEventListener("touchstart", handleOutsideClick)
+    }
   }, [open])
 
   const filteredItems = React.useMemo(() => {
     if (!searchValue) return items
-    return items.filter(item => 
+    return items.filter(item =>
       item.label.toLowerCase().includes(searchValue.toLowerCase())
     )
   }, [searchValue, items])
@@ -64,58 +65,46 @@ export function SearchableSelect({
     setSearchValue(e.target.value)
   }
 
-  const handleOpenChange = (newOpen: boolean) => {
-    setOpen(newOpen)
-    if (!newOpen) {
-      setSearchValue("")
-    }
-  }
-
   return (
-    <Popover open={open} onOpenChange={handleOpenChange}>
-      <PopoverTrigger asChild>
-        <div className="relative w-full">
-          {open ? (
-            <input
-              ref={inputRef}
-              type="text"
-              value={searchValue}
-              onChange={handleInputChange}
-              placeholder={selectedLabel || placeholder}
-              className={cn(
-                "w-full px-3 py-1.5 pr-8 h-8 text-xs border border-input rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
-                className
-              )}
-            />
-          ) : (
-            <button
-              type="button"
-              onClick={() => setOpen(true)}
-              className={cn(
-                "w-full px-3 py-1.5 pr-8 h-8 text-xs border border-input rounded-md bg-background text-left focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
-                !selectedLabel && "text-muted-foreground",
-                className
-              )}
-            >
-              {selectedLabel || placeholder}
-            </button>
-          )}
-          <div className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none">
-            <ChevronsUpDown className="h-4 w-4 opacity-50" />
-          </div>
+    <div ref={containerRef} className="relative w-full">
+      <div className="relative w-full">
+        {open ? (
+          <input
+            ref={inputRef}
+            type="text"
+            value={searchValue}
+            onChange={handleInputChange}
+            placeholder={selectedLabel || placeholder}
+            className={cn(
+              "w-full px-3 py-1.5 pr-8 h-8 text-xs border border-input rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
+              className
+            )}
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            className={cn(
+              "w-full px-3 py-1.5 pr-8 h-8 text-xs border border-input rounded-md bg-background text-left focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
+              !selectedLabel && "text-muted-foreground",
+              className
+            )}
+          >
+            {selectedLabel || placeholder}
+          </button>
+        )}
+        <div className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none">
+          <ChevronsUpDown className="h-4 w-4 opacity-50" />
         </div>
-      </PopoverTrigger>
-      <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] p-0 overflow-visible">
-        <div
-          ref={scrollRef}
-          className="w-full bg-popover text-popover-foreground"
+      </div>
+
+      {open && (
+        <div className="absolute z-50 w-full mt-1 rounded-md border border-input bg-popover text-popover-foreground shadow-md"
           style={{
             height: '200px',
-            overflowY: 'scroll',
-            overflowX: 'hidden',
+            overflow: 'auto',
             WebkitOverflowScrolling: 'touch',
             overscrollBehavior: 'contain',
-            scrollBehavior: 'smooth',
           }}
         >
           {filteredItems.length === 0 ? (
@@ -145,7 +134,7 @@ export function SearchableSelect({
             </div>
           )}
         </div>
-      </PopoverContent>
-    </Popover>
+      )}
+    </div>
   )
 }
