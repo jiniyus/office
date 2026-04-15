@@ -77,6 +77,8 @@ export default function Stock() {
     quantity: "",
   }]);
   const [selectedSalesCompany, setSelectedSalesCompany] = useState<"CEC" | "AGW" | "BRP" | "">("");
+  const [salesDate, setSalesDate] = useState(new Date());
+  const [salesRemarks, setSalesRemarks] = useState("");
   const [newProduct, setNewProduct] = useState({
     name: "",
     category: "",
@@ -122,6 +124,8 @@ export default function Stock() {
         quantity: "",
       }]);
       setSelectedSalesCompany("");
+      setSalesDate(new Date());
+      setSalesRemarks("");
     }
   }, [isSalesDialogOpen]);
   
@@ -570,6 +574,8 @@ export default function Stock() {
           itemId: item.name,
           category: item.category,
           company: user?.company || "",
+          notes: salesRemarks.trim() || null,
+          businessDate: Timestamp.fromDate(salesDate),
           quantityChange: -qty,
           previousBalance: ofBalance,
           balance: newOFBalance,
@@ -578,6 +584,7 @@ export default function Stock() {
           type: 'sales',
           salesId: salesId,
           salesCompany: selectedSalesCompany,
+          edited: false,
           affectedBalance: 'officeBalance',
           previousHTBalance: htBalance,
           previousFABalance: faBalance,
@@ -610,6 +617,8 @@ export default function Stock() {
       setIsSalesDialogOpen(false);
       setSalesRows([{ id: "", quantity: "" }]);
       setSelectedSalesCompany("");
+      setSalesDate(new Date());
+      setSalesRemarks("");
     } catch (error) {
       console.error("Error processing sale:", error);
       toast({ variant: "destructive", title: "Error", description: "Failed to process sale" });
@@ -1296,19 +1305,43 @@ export default function Stock() {
           </DialogHeader>
           
           <div className="space-y-4 py-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <Label htmlFor="sales-date" className="text-sm font-semibold">Date *</Label>
+                <Input
+                  id="sales-date"
+                  type="date"
+                  className="h-9"
+                  value={salesDate.toISOString().split("T")[0]}
+                  onChange={(e) => setSalesDate(new Date(e.target.value))}
+                />
+              </div>
+
+              <div>
+                <Label htmlFor="sales-company" className="text-sm font-semibold">Selling Company *</Label>
+                <Select value={selectedSalesCompany} onValueChange={(value: any) => setSelectedSalesCompany(value)}>
+                  <SelectTrigger id="sales-company" className="h-9">
+                    <SelectValue placeholder="Select company" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="CEC">CEC</SelectItem>
+                    <SelectItem value="AGW">AGW</SelectItem>
+                    <SelectItem value="BRP">BRP</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
             {/* Company Selector */}
             <div>
-              <Label htmlFor="sales-company" className="text-sm font-semibold">Selling Company *</Label>
-              <Select value={selectedSalesCompany} onValueChange={(value: any) => setSelectedSalesCompany(value)}>
-                <SelectTrigger id="sales-company" className="h-9">
-                  <SelectValue placeholder="Select company" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="CEC">CEC</SelectItem>
-                  <SelectItem value="AGW">AGW</SelectItem>
-                  <SelectItem value="BRP">BRP</SelectItem>
-                </SelectContent>
-              </Select>
+              <Label htmlFor="sales-remarks" className="text-sm font-semibold">Remarks</Label>
+              <Input
+                id="sales-remarks"
+                className="h-9"
+                placeholder="Optional remarks"
+                value={salesRemarks}
+                onChange={(e) => setSalesRemarks(e.target.value)}
+              />
             </div>
 
             {/* Sales Items */}
@@ -1435,6 +1468,8 @@ export default function Stock() {
                 setExpandedRowIndex(null);
                 setSalesRows([{ id: "", quantity: "" }]);
                 setSelectedSalesCompany("");
+                setSalesDate(new Date());
+                setSalesRemarks("");
               }}
               disabled={isSubmitting}
               className="text-xs h-9"

@@ -1,0 +1,552 @@
+import {
+  Timestamp,
+  addDoc,
+  collection,
+  deleteDoc,
+  doc,
+  getDocs,
+  query,
+  setDoc,
+  updateDoc,
+  where,
+} from "firebase/firestore";
+import { db } from "@/lib/firebase";
+import type { StockItem, Transaction } from "@/lib/types";
+
+type AdvancedTransactionType =
+  | "heat_treatment_created"
+  | "factory_transfer_created"
+  | "office_transfer_created"
+  | "sales";
+
+type EditableGroupType = "process" | "factory_transfer" | "office_transfer" | "sales";
+
+interface ProcessDocData {
+  id: string;
+  serialNumber?: string;
+  date?: Date;
+  processType: string;
+  items: Array<{
+    itemId: string;
+    itemName: string;
+    category: string;
+    quantity: number;
+  }>;
+  createdAt?: Date;
+  createdBy?: {
+    id: string;
+    name: string;
+  };
+}
+
+interface EditableGroupRowInput {
+  stockItemId: string;
+  quantity: number;
+}
+
+interface EditableGroupInput {
+  company?: string;
+  type: EditableGroupType;
+  groupId: string;
+  rows: EditableGroupRowInput[];
+  businessDate: Date;
+  user: {
+    id: string;
+    name: string;
+  };
+  salesCompany?: string;
+  notes?: string;
+  processSerialNumber?: string;
+}
+
+interface AdvancedContext {
+  stockItems: StockItem[];
+  transactions: Transaction[];
+  processDocs: ProcessDocData[];
+}
+
+const ADVANCED_TYPES: AdvancedTransactionType[] = [
+  "heat_treatment_created",
+  "factory_transfer_created",
+  "office_transfer_created",
+  "sales",
+];
+
+const TYPE_ORDER: Record<AdvancedTransactionType, number> = {
+  heat_treatment_created: 0,
+  factory_transfer_created: 1,
+  office_transfer_created: 2,
+  sales: 3,
+};
+
+const toItemKey = (itemName: string, category: string) =>
+  `${itemName.toLowerCase()}::${category.toLowerCase()}`;
+
+const transactionDocIdKey = (tx: Transaction) => {
+  if (tx.type === "heat_treatment_created") return tx.processId;
+  if (tx.type === "sales") return tx.salesId;
+  return tx.transferId;
+};
+
+const toJsDate = (value?: Date | Timestamp | null) => {
+  if (!value) return undefined;
+  return value instanceof Timestamp ? value.toDate() : value;
+};
+
+const getEffectiveTime = (tx: Transaction) =>
+  (tx.businessDate || tx.timestamp || new Date(0)).getTime();
+
+const compareAdvancedTransactions = (a: Transaction, b: Transaction) => {
+  const dateCompare = getEffectiveTime(a) - getEffectiveTime(b);
+  if (dateCompare !== 0) return dateCompare;
+
+  const timeCompare = a.timestamp.getTime() - b.timestamp.getTime();
+  if (timeCompare !== 0) return timeCompare;
+
+  const typeCompare =
+    TYPE_ORDER[a.type as AdvancedTransactionType] - TYPE_ORDER[b.type as AdvancedTransactionType];
+  if (typeCompare !== 0) return typeCompare;
+
+  return a.id.localeCompare(b.id);
+};
+
+const mapTransactionDoc = (docSnap: any): Transaction => {
+  const data = docSnap.data();
+  return {
+    id: docSnap.id,
+    category: data.category,
+    company: data.company,
+    itemId: data.itemId,
+    notes: data.notes,
+    businessDate: data.businessDate?.toDate?.() || undefined,
+    edited: data.edited || false,
+    editedAt: data.editedAt?.toDate?.() || undefined,
+    processSerialNumber: data.processSerialNumber,
+    quantityChange: data.quantityChange || 0,
+    previousBalance: data.previousBalance || 0,
+    balance: data.balance || 0,
+    locationId: data.locationId,
+    timestamp: data.timestamp?.toDate?.() || new Date(),
+    type: data.type || "adjustment",
+    bulkTransactionId: data.bulkTransactionId,
+    processId: data.processId,
+    transferId: data.transferId,
+    salesId: data.salesId,
+    salesCompany: data.salesCompany,
+    affectedBalance: data.affectedBalance,
+    previousHTBalance: data.previousHTBalance,
+    previousFABalance: data.previousFABalance,
+    previousOFBalance: data.previousOFBalance,
+    newHTBalance: data.newHTBalance,
+    newFABalance: data.newFABalance,
+    newOFBalance: data.newOFBalance,
+    user: data.user || { id: "", name: "Unknown" },
+  };
+};
+
+export async function loadAdvancedContext(company?: string): Promise<AdvancedContext> {
+  const [stockSnapshot, txSnapshot, processSnapshot] = await Promise.all([
+    getDocs(
+      company
+        ? query(collection(db, "stock-items"), where("company", "==", company))
+        : query(collection(db, "stock-items"))
+    ),
+    getDocs(
+      company
+        ? query(collection(db, "transactions"), where("company", "==", company))
+        : query(collection(db, "transactions"))
+    ),
+    getDocs(query(collection(db, "processes"), where("processType", "==", "heat_treatment"))),
+  ]);
+
+  return {
+    stockItems: stockSnapshot.docs.map((docSnap) => {
+      const data = docSnap.data();
+      return {
+        id: docSnap.id,
+        name: data.name,
+        category: data.category,
+        quantity: data.quantity || 0,
+        size: data.size,
+        locationId: data.locationId,
+        company: data.company,
+        createdAt: data.createdAt?.toDate?.() || new Date(),
+        createdBy: data.createdBy,
+        lastUpdated: data.lastUpdated?.toDate?.(),
+        heatTreatmentBalance: data.heatTreatmentBalance || 0,
+        factoryBalance: data.factoryBalance || 0,
+        officeBalance: data.officeBalance || 0,
+      } as StockItem;
+    }),
+    transactions: txSnapshot.docs.map(mapTransactionDoc),
+    processDocs: processSnapshot.docs.map((docSnap) => {
+      const data = docSnap.data();
+      return {
+        id: docSnap.id,
+        serialNumber: data.serialNumber,
+        date: toJsDate(data.date),
+        processType: data.processType,
+        items: data.items || [],
+        createdAt: toJsDate(data.createdAt),
+        createdBy: data.createdBy,
+      };
+    }),
+  };
+}
+
+const getTransactionCollectionQuery = (company?: string) =>
+  company
+    ? query(collection(db, "transactions"), where("company", "==", company))
+    : query(collection(db, "transactions"));
+
+const toGroupType = (type: EditableGroupType): AdvancedTransactionType => {
+  if (type === "process") return "heat_treatment_created";
+  if (type === "factory_transfer") return "factory_transfer_created";
+  if (type === "office_transfer") return "office_transfer_created";
+  return "sales";
+};
+
+export async function saveAdvancedGroupEdit(input: EditableGroupInput) {
+  const context = await loadAdvancedContext(input.company);
+  const stockById = new Map(context.stockItems.map((item) => [item.id, item]));
+  const type = toGroupType(input.type);
+  const existingTxs = context.transactions
+    .filter((tx) => {
+      if (type === "heat_treatment_created") return tx.processId === input.groupId;
+      if (type === "sales") return tx.salesId === input.groupId;
+      return tx.transferId === input.groupId && tx.type === type;
+    })
+    .sort(compareAdvancedTransactions);
+
+  const now = Timestamp.now();
+  const stockRows = input.rows
+    .map((row) => {
+      const stockItem = stockById.get(row.stockItemId);
+      if (!stockItem) return null;
+      return { stockItem, quantity: row.quantity };
+    })
+    .filter(Boolean) as Array<{ stockItem: StockItem; quantity: number }>;
+
+  for (let index = 0; index < stockRows.length; index += 1) {
+    const row = stockRows[index];
+    const txPayload: Record<string, any> = {
+      itemId: row.stockItem.name,
+      category: row.stockItem.category,
+      company: input.company || row.stockItem.company || "",
+      quantityChange: type === "sales" ? -row.quantity : row.quantity,
+      previousBalance: 0,
+      balance: 0,
+      locationId: null,
+      timestamp: now,
+      businessDate: Timestamp.fromDate(input.businessDate),
+      type,
+      edited: true,
+      editedAt: now,
+      user: input.user,
+      notes: input.notes || null,
+      salesCompany: input.type === "sales" ? input.salesCompany || null : null,
+      processSerialNumber: input.type === "process" ? input.processSerialNumber || "" : null,
+      affectedBalance:
+        type === "heat_treatment_created"
+          ? "heatTreatmentBalance"
+          : type === "factory_transfer_created"
+          ? "heatTreatmentBalance"
+          : type === "office_transfer_created"
+          ? "factoryBalance"
+          : "officeBalance",
+      previousHTBalance: 0,
+      previousFABalance: 0,
+      previousOFBalance: 0,
+      newHTBalance: 0,
+      newFABalance: 0,
+      newOFBalance: 0,
+    };
+
+    if (input.type === "process") {
+      txPayload.processId = input.groupId;
+    } else if (input.type === "sales") {
+      txPayload.salesId = input.groupId;
+    } else {
+      txPayload.transferId = input.groupId;
+    }
+
+    const existingTx = existingTxs[index];
+    if (existingTx) {
+      await updateDoc(doc(db, "transactions", existingTx.id), txPayload);
+    } else {
+      await addDoc(collection(db, "transactions"), txPayload);
+    }
+  }
+
+  for (const staleTx of existingTxs.slice(stockRows.length)) {
+    await deleteDoc(doc(db, "transactions", staleTx.id));
+  }
+
+  if (input.type === "process") {
+    const processItems = stockRows.map(({ stockItem, quantity }) => ({
+      itemId: stockItem.id,
+      itemName: stockItem.name,
+      category: stockItem.category,
+      quantity,
+    }));
+
+    await setDoc(
+      doc(db, "processes", input.groupId),
+      {
+        serialNumber: input.processSerialNumber || existingTxs[0]?.processSerialNumber || input.groupId,
+        date: Timestamp.fromDate(input.businessDate),
+        processType: "heat_treatment",
+        items: processItems,
+        createdAt: now,
+        createdBy: input.user,
+      },
+      { merge: true }
+    );
+  }
+
+  await recalculateAdvancedState(input.company);
+}
+
+export async function reverseAdvancedGroup(groupType: EditableGroupType, groupId: string, company?: string) {
+  const context = await loadAdvancedContext(company);
+  const matchingTxs = context.transactions.filter((tx) => {
+    if (groupType === "process") return tx.processId === groupId;
+    if (groupType === "sales") return tx.salesId === groupId;
+    if (groupType === "factory_transfer") {
+      return tx.transferId === groupId && tx.type === "factory_transfer_created";
+    }
+    return tx.transferId === groupId && tx.type === "office_transfer_created";
+  });
+
+  await Promise.all(matchingTxs.map((tx) => deleteDoc(doc(db, "transactions", tx.id))));
+
+  if (groupType === "process") {
+    await deleteDoc(doc(db, "processes", groupId));
+  }
+
+  await recalculateAdvancedState(company);
+}
+
+export async function recalculateAdvancedState(company?: string) {
+  const context = await loadAdvancedContext(company);
+  const advancedTxs = context.transactions
+    .filter((tx) => ADVANCED_TYPES.includes(tx.type as AdvancedTransactionType))
+    .sort(compareAdvancedTransactions);
+
+  const txUpdates: Array<{ id: string; data: Record<string, any> }> = [];
+  const txDeletes: string[] = [];
+  const balancesByKey = new Map<string, { ht: number; fa: number; of: number }>();
+  const touchedItemKeys = new Set<string>();
+
+  for (const tx of advancedTxs) {
+    const itemKey = toItemKey(tx.itemId, tx.category);
+    touchedItemKeys.add(itemKey);
+
+    const current = balancesByKey.get(itemKey) || { ht: 0, fa: 0, of: 0 };
+    const requestedQty = Math.max(0, Math.abs(tx.quantityChange || 0));
+    let appliedQty = requestedQty;
+
+    if (tx.type === "factory_transfer_created") {
+      appliedQty = Math.min(requestedQty, current.ht);
+    } else if (tx.type === "office_transfer_created") {
+      appliedQty = Math.min(requestedQty, current.fa);
+    } else if (tx.type === "sales") {
+      appliedQty = Math.min(requestedQty, current.of);
+    }
+
+    if (appliedQty <= 0) {
+      txDeletes.push(tx.id);
+      continue;
+    }
+
+    const before = { ...current };
+    if (tx.type === "heat_treatment_created") {
+      current.ht += appliedQty;
+    } else if (tx.type === "factory_transfer_created") {
+      current.ht -= appliedQty;
+      current.fa += appliedQty;
+    } else if (tx.type === "office_transfer_created") {
+      current.fa -= appliedQty;
+      current.of += appliedQty;
+    } else if (tx.type === "sales") {
+      current.of -= appliedQty;
+    }
+
+    balancesByKey.set(itemKey, current);
+
+    txUpdates.push({
+      id: tx.id,
+      data: {
+        quantityChange: tx.type === "sales" ? -appliedQty : appliedQty,
+        previousBalance:
+          tx.type === "heat_treatment_created"
+            ? before.ht
+            : tx.type === "factory_transfer_created"
+            ? before.ht
+            : tx.type === "office_transfer_created"
+            ? before.fa
+            : before.of,
+        balance:
+          tx.type === "heat_treatment_created"
+            ? current.ht
+            : tx.type === "factory_transfer_created"
+            ? current.ht
+            : tx.type === "office_transfer_created"
+            ? current.fa
+            : current.of,
+        previousHTBalance: before.ht,
+        previousFABalance: before.fa,
+        previousOFBalance: before.of,
+        newHTBalance: current.ht,
+        newFABalance: current.fa,
+        newOFBalance: current.of,
+      },
+    });
+  }
+
+  for (const txId of txDeletes) {
+    await deleteDoc(doc(db, "transactions", txId));
+  }
+
+  for (const update of txUpdates) {
+    await updateDoc(doc(db, "transactions", update.id), update.data);
+  }
+
+  const stockByKey = new Map(context.stockItems.map((item) => [toItemKey(item.name, item.category), item]));
+  for (const item of context.stockItems) {
+    const currentAdvancedTotal =
+      (item.heatTreatmentBalance || 0) + (item.factoryBalance || 0) + (item.officeBalance || 0);
+    if (currentAdvancedTotal > 0) {
+      touchedItemKeys.add(toItemKey(item.name, item.category));
+    }
+  }
+
+  for (const itemKey of Array.from(touchedItemKeys)) {
+    const stockItem = stockByKey.get(itemKey);
+    if (!stockItem) continue;
+
+    const next = balancesByKey.get(itemKey) || { ht: 0, fa: 0, of: 0 };
+    await updateDoc(doc(db, "stock-items", stockItem.id), {
+      heatTreatmentBalance: next.ht,
+      factoryBalance: next.fa,
+      officeBalance: next.of,
+      quantity: next.ht + next.fa + next.of,
+      lastUpdated: Timestamp.now(),
+    });
+  }
+
+  const refreshedContext = await loadAdvancedContext(company);
+  const refreshedAdvancedTxs = refreshedContext.transactions
+    .filter((tx) => tx.type === "heat_treatment_created" || tx.type === "factory_transfer_created")
+    .sort(compareAdvancedTransactions);
+
+  const htGroups = new Map<
+    string,
+    {
+      serialNumber: string;
+      date: Date;
+      createdAt: Date;
+      createdBy: { id: string; name: string };
+      items: Array<{ itemId: string; itemName: string; category: string; quantity: number }>;
+    }
+  >();
+
+  for (const tx of refreshedAdvancedTxs) {
+    if (tx.type !== "heat_treatment_created" || !tx.processId) continue;
+    const group = htGroups.get(tx.processId) || {
+      serialNumber: tx.processSerialNumber || tx.processId,
+      date: tx.businessDate || tx.timestamp,
+      createdAt: tx.timestamp,
+      createdBy: tx.user,
+      items: [],
+    };
+
+    group.items.push({
+      itemId: refreshedContext.stockItems.find(
+        (item) => toItemKey(item.name, item.category) === toItemKey(tx.itemId, tx.category)
+      )?.id || "",
+      itemName: tx.itemId,
+      category: tx.category,
+      quantity: Math.max(0, tx.quantityChange),
+    });
+    htGroups.set(tx.processId, group);
+  }
+
+  const sortedHtGroups = Array.from(htGroups.entries()).sort((a, b) => {
+    const aTime = a[1].date.getTime();
+    const bTime = b[1].date.getTime();
+    if (aTime !== bTime) return aTime - bTime;
+    return a[1].createdAt.getTime() - b[1].createdAt.getTime();
+  });
+
+  const fifoPools = new Map<
+    string,
+    Array<{ processId: string; remaining: number }>
+  >();
+
+  for (const [processId, group] of sortedHtGroups) {
+    for (const item of group.items) {
+      const key = toItemKey(item.itemName, item.category);
+      const pool = fifoPools.get(key) || [];
+      pool.push({ processId, remaining: item.quantity });
+      fifoPools.set(key, pool);
+    }
+  }
+
+  const factoryTxs = refreshedAdvancedTxs.filter((tx) => tx.type === "factory_transfer_created");
+  for (const tx of factoryTxs) {
+    const key = toItemKey(tx.itemId, tx.category);
+    const pool = fifoPools.get(key) || [];
+    let toDeduct = Math.max(0, tx.quantityChange);
+
+    for (const entry of pool) {
+      if (toDeduct <= 0) break;
+      const deducted = Math.min(entry.remaining, toDeduct);
+      entry.remaining -= deducted;
+      toDeduct -= deducted;
+    }
+  }
+
+  const remainingByProcess = new Map<
+    string,
+    Array<{ itemId: string; itemName: string; category: string; quantity: number }>
+  >();
+
+  for (const [processId, group] of sortedHtGroups) {
+    const items: Array<{ itemId: string; itemName: string; category: string; quantity: number }> = [];
+    for (const item of group.items) {
+      const key = toItemKey(item.itemName, item.category);
+      const pool = fifoPools.get(key) || [];
+      const remainingEntry = pool.find((entry) => entry.processId === processId);
+      const remaining = remainingEntry?.remaining || 0;
+      if (remaining > 0) {
+        items.push({ ...item, quantity: remaining });
+      }
+    }
+    remainingByProcess.set(processId, items);
+  }
+
+  const existingProcessIds = new Set(refreshedContext.processDocs.map((processDoc) => processDoc.id));
+  for (const [processId, group] of sortedHtGroups) {
+    const remainingItems = remainingByProcess.get(processId) || [];
+    if (remainingItems.length === 0) {
+      if (existingProcessIds.has(processId)) {
+        await deleteDoc(doc(db, "processes", processId));
+      }
+      continue;
+    }
+
+    await setDoc(
+      doc(db, "processes", processId),
+      {
+        serialNumber: group.serialNumber,
+        date: Timestamp.fromDate(group.date),
+        processType: "heat_treatment",
+        items: remainingItems,
+        createdAt: Timestamp.fromDate(group.createdAt),
+        createdBy: group.createdBy,
+      },
+      { merge: true }
+    );
+  }
+}

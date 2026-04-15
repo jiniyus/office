@@ -88,6 +88,8 @@ export default function ProcessPage() {
   const [editingSerialNumber, setEditingSerialNumber] = useState(false);
   const [tempSerialNumber, setTempSerialNumber] = useState("");
   const [selectedDate, setSelectedDate] = useState(new Date());
+  const [factoryTransferDate, setFactoryTransferDate] = useState(new Date());
+  const [officeTransferDate, setOfficeTransferDate] = useState(new Date());
   const [processItems, setProcessItems] = useState<ProcessRow[]>([{ id: "", quantity: "" }]);
   const [factoryTransferRows, setFactoryTransferRows] = useState<ProcessRow[]>([{ id: "", quantity: "" }]);
   const [officeTransferRows, setOfficeTransferRows] = useState<ProcessRow[]>([{ id: "", quantity: "" }]);
@@ -155,9 +157,11 @@ export default function ProcessPage() {
   const handleProcessClick = (processType: "heat_treatment" | "factory_transfer" | "office_transfer") => {
     if (processType === "factory_transfer") {
       setFactoryTransferRows([{ id: "", quantity: "" }]);
+      setFactoryTransferDate(new Date());
       setIsFactoryTransferModalOpen(true);
     } else if (processType === "office_transfer") {
       setOfficeTransferRows([{ id: "", quantity: "" }]);
+      setOfficeTransferDate(new Date());
       setIsOfficeTransferModalOpen(true);
     } else {
       // Heat treatment
@@ -289,6 +293,8 @@ export default function ProcessPage() {
           itemId: item.itemName,
           category: item.category,
           company: user?.company || "",
+          businessDate: Timestamp.fromDate(selectedDate),
+          processSerialNumber: serialNumber,
           quantityChange: item.quantity,
           previousBalance: currentBalance,
           balance: newBalance,
@@ -296,6 +302,7 @@ export default function ProcessPage() {
           timestamp: Timestamp.now(),
           type: historyType as any,
           processId: docRef.id,
+          edited: false,
           affectedBalance: balanceField,
           previousHTBalance: selectedProcess === 'heat_treatment' ? currentBalance : htBalance,
           previousFABalance: selectedProcess === 'factory_transfer' ? currentBalance : faBalance,
@@ -615,6 +622,7 @@ export default function ProcessPage() {
           itemId: item.name,
           category: item.category,
           company: user?.company || "",
+          businessDate: Timestamp.fromDate(factoryTransferDate),
           quantityChange: totalQtyToDeduct,
           previousBalance: htBalance,
           balance: newHTBalance,
@@ -622,6 +630,7 @@ export default function ProcessPage() {
           timestamp: Timestamp.now(),
           type: 'factory_transfer_created',
           transferId: factoryTransferId,
+          edited: false,
           affectedBalance: 'heatTreatmentBalance',
           previousHTBalance: htBalance,
           previousFABalance: faBalance,
@@ -727,6 +736,7 @@ export default function ProcessPage() {
           itemId: item.name,
           category: item.category,
           company: user?.company || "",
+          businessDate: Timestamp.fromDate(officeTransferDate),
           quantityChange: totalQtyToDeduct,
           previousBalance: faBalance,
           balance: newFABalance,
@@ -734,6 +744,7 @@ export default function ProcessPage() {
           timestamp: Timestamp.now(),
           type: 'office_transfer_created',
           transferId: officeTransferId,
+          edited: false,
           affectedBalance: 'factoryBalance',
           previousHTBalance: htBalance,
           previousFABalance: faBalance,
@@ -1087,8 +1098,19 @@ export default function ProcessPage() {
             <DialogTitle>Transfer to Factory</DialogTitle>
             <DialogDescription>Transfer items from Heat Treatment to Factory location</DialogDescription>
           </DialogHeader>
-          
-          <div className="space-y-2">
+
+          <div className="space-y-4">
+            <div>
+              <Label className="text-xs mb-1 block font-semibold">Date</Label>
+              <Input
+                type="date"
+                value={format(factoryTransferDate, "yyyy-MM-dd")}
+                onChange={(e) => setFactoryTransferDate(new Date(e.target.value))}
+                className="h-8 text-xs border-slate-200"
+              />
+            </div>
+
+            <div className="space-y-2">
             {factoryTransferRows.map((row, index) => {
               const selectedItem = items.find(i => i.id === row.id);
               const isExpanded = expandedRowIndex === index;
@@ -1189,20 +1211,21 @@ export default function ProcessPage() {
                 </div>
               );
             })}
-          </div>
+            </div>
 
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setExpandedRowIndex(null);
-                setFactoryTransferRows([...factoryTransferRows, { id: "", quantity: "" }]);
-              }}
-              className="text-xs h-9"
-            >
-              + Add Row
-            </Button>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setExpandedRowIndex(null);
+                  setFactoryTransferRows([...factoryTransferRows, { id: "", quantity: "" }]);
+                }}
+                className="text-xs h-9"
+              >
+                + Add Row
+              </Button>
+            </div>
           </div>
 
           <DialogFooter>
@@ -1232,8 +1255,19 @@ export default function ProcessPage() {
             <DialogTitle>Transfer to Office</DialogTitle>
             <DialogDescription>Transfer items from Factory to Office location</DialogDescription>
           </DialogHeader>
-          
-          <div className="space-y-2">
+
+          <div className="space-y-4">
+            <div>
+              <Label className="text-xs mb-1 block font-semibold">Date</Label>
+              <Input
+                type="date"
+                value={format(officeTransferDate, "yyyy-MM-dd")}
+                onChange={(e) => setOfficeTransferDate(new Date(e.target.value))}
+                className="h-8 text-xs border-slate-200"
+              />
+            </div>
+
+            <div className="space-y-2">
             {officeTransferRows.map((row, index) => {
               const selectedItem = items.find(i => i.id === row.id);
               const isExpanded = expandedRowIndex === index;
@@ -1334,20 +1368,21 @@ export default function ProcessPage() {
                 </div>
               );
             })}
-          </div>
+            </div>
 
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setExpandedRowIndex(null);
-                setOfficeTransferRows([...officeTransferRows, { id: "", quantity: "" }]);
-              }}
-              className="text-xs h-9"
-            >
-              + Add Row
-            </Button>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setExpandedRowIndex(null);
+                  setOfficeTransferRows([...officeTransferRows, { id: "", quantity: "" }]);
+                }}
+                className="text-xs h-9"
+              >
+                + Add Row
+              </Button>
+            </div>
           </div>
 
           <DialogFooter>

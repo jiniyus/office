@@ -38,6 +38,11 @@ export interface Transaction {
   company: string; // Company ID reference
   itemId: string; // Stock item name/id
   notes?: string;
+  remarks?: string; // Optional remarks for sales
+  businessDate?: Date;
+  edited?: boolean;
+  editedAt?: Date;
+  processSerialNumber?: string;
   quantityChange: number;
   previousBalance: number;
   balance: number; // Balance after transaction

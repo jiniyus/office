@@ -1,14 +1,23 @@
 import { Layout } from "@/components/layout";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ArrowUpRight, ArrowDownLeft, Search, Trash2, Calendar, ChevronDown, ChevronRight, Filter } from "lucide-react";
+import { ArrowUpRight, ArrowDownLeft, Search, Trash2, Calendar, ChevronDown, ChevronRight, Filter, Pencil } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { useTransactions, useLocations } from "@/lib/firestore-hooks";
+import { useTransactions, useLocations, useStockItems } from "@/lib/firestore-hooks";
 import { useState, useMemo } from "react";
 import { Spinner } from "@/components/ui/spinner";
 import { format } from "date-fns";
 import { capitalize } from "@/lib/utils";
+import { SearchableSelect } from "@/components/ui/searchable-select";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -32,6 +41,7 @@ import { db } from "@/lib/firebase";
 import { collection, query, where, getDocs, deleteDoc, doc, Timestamp, updateDoc, getDoc } from "firebase/firestore";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
+import { reverseAdvancedGroup, saveAdvancedGroupEdit } from "@/lib/advanced-history";
 
 interface HistoryProcessItem {
   itemId: string;
@@ -58,21 +68,82 @@ interface HistoryProcessTransaction {
   type: string;
 }
 
+interface EditHistoryRow {
+  id: string;
+  quantity: string;
+}
+
+interface EditHistoryState {
+  type: "process" | "factory_transfer" | "office_transfer" | "sales";
+  groupId: string;
+  title: string;
+  rows: EditHistoryRow[];
+  businessDate: string;
+  salesCompany: "CEC" | "AGW" | "BRP" | "";
+  remarks: string;
+  processSerialNumber: string;
+}
+
 export default function HistoryPage() {
   const HISTORY_ACTION_PASSWORD = "2026";
   const { transactions, loading } = useTransactions();
   const { locations } = useLocations();
+  const { items } = useStockItems();
   const { user } = useAuth();
   const [selectedDate, setSelectedDate] = useState<string>("");
   const [expandedBulkId, setExpandedBulkId] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<any>(null);
   const [deletePassword, setDeletePassword] = useState("");
+  const [editState, setEditState] = useState<EditHistoryState | null>(null);
+  const [editPassword, setEditPassword] = useState("");
+  const [isEditSubmitting, setIsEditSubmitting] = useState(false);
   const [selectedFilters, setSelectedFilters] = useState<string[]>([]);
   const [expandedSalesFilter, setExpandedSalesFilter] = useState(false);
   const { toast } = useToast();
 
   const getItemKey = (itemName: string, category: string) =>
     `${itemName.toLowerCase()}::${category.toLowerCase()}`;
+
+  const toDateInputValue = (date?: Date) => {
+    if (!date) return new Date().toISOString().split("T")[0];
+    const year = date.getFullYear();
+    const month = `${date.getMonth() + 1}`.padStart(2, "0");
+    const day = `${date.getDate()}`.padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  };
+
+  const formatBusinessDate = (date?: Date) => {
+    if (!date) return null;
+    return format(date, "MMM dd, yyyy");
+  };
+
+  const getStockItemIdFromTransaction = (itemName: string, category: string) =>
+    items.find((item) => getItemKey(item.name, item.category) === getItemKey(itemName, category))?.id || "";
+
+  const openEditDialog = (
+    type: EditHistoryState["type"],
+    groupId: string,
+    txs: any[],
+    options?: { title?: string; processSerialNumber?: string }
+  ) => {
+    const firstTx = txs[0];
+    if (!firstTx) return;
+
+    setEditState({
+      type,
+      groupId,
+      title: options?.title || "Edit Entry",
+      rows: txs.map((tx) => ({
+        id: getStockItemIdFromTransaction(tx.itemId, tx.category),
+        quantity: `${Math.abs(tx.quantityChange || 0)}`,
+      })),
+      businessDate: toDateInputValue(firstTx.businessDate || firstTx.timestamp),
+      salesCompany: (firstTx.salesCompany || "") as "CEC" | "AGW" | "BRP" | "",
+      remarks: firstTx.notes || "",
+      processSerialNumber: options?.processSerialNumber || firstTx.processSerialNumber || "",
+    });
+    setEditPassword("");
+  };
 
   const reverseHeatTreatmentProcess = async (processId: string) => {
     const [processSnapshot, processTxSnapshot, stockItemsSnapshot] = await Promise.all([
@@ -327,6 +398,55 @@ export default function HistoryPage() {
     return true;
   };
 
+  const handleEditConfirm = async () => {
+    if (!editState) return;
+    if (!validateHistoryPassword(editPassword)) return;
+
+    const validRows = editState.rows.filter((row) => row.id && parseInt(row.quantity) > 0);
+    if (validRows.length === 0) {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Please add at least one valid row.",
+      });
+      return;
+    }
+
+    try {
+      setIsEditSubmitting(true);
+      await saveAdvancedGroupEdit({
+        company: user?.company,
+        type: editState.type,
+        groupId: editState.groupId,
+        rows: validRows.map((row) => ({
+          stockItemId: row.id,
+          quantity: parseInt(row.quantity, 10),
+        })),
+        businessDate: new Date(editState.businessDate),
+        salesCompany: editState.type === "sales" ? editState.salesCompany : undefined,
+        notes: editState.type === "sales" ? editState.remarks.trim() : undefined,
+        processSerialNumber: editState.type === "process" ? editState.processSerialNumber.trim() : undefined,
+        user: { id: user?.uid || "", name: user?.displayName || "Unknown" },
+      });
+
+      toast({
+        title: "Success",
+        description: "History entry updated successfully",
+      });
+      setEditState(null);
+      setEditPassword("");
+    } catch (error) {
+      console.error("Error editing history entry:", error);
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Failed to update history entry",
+      });
+    } finally {
+      setIsEditSubmitting(false);
+    }
+  };
+
   const executeDelete = async (deleteOption: 'delete' | 'reverse') => {
     if (!deleteConfirmId) return;
     if (!validateHistoryPassword(deletePassword)) return;
@@ -347,12 +467,37 @@ export default function HistoryPage() {
         }
         
         if (deleteOption === 'reverse' && deleteConfirmId.type === 'process' && deleteConfirmId.processId) {
-          const reversedCount = await reverseHeatTreatmentProcess(deleteConfirmId.processId);
+          await reverseAdvancedGroup('process', deleteConfirmId.processId, user?.company);
           toast({
             title: "Success",
-            description: `Reversed process with ${reversedCount} items`,
+            description: `Reversed process with ${relevantTxs.length} items`,
           });
           setDeleteConfirmId(null);
+          setDeletePassword("");
+          return;
+        }
+
+        if (deleteOption === 'reverse' && deleteConfirmId.type === 'sales' && deleteConfirmId.salesId) {
+          await reverseAdvancedGroup('sales', deleteConfirmId.salesId, user?.company);
+          toast({
+            title: "Success",
+            description: `Reversed sale with ${relevantTxs.length} items`,
+          });
+          setDeleteConfirmId(null);
+          setDeletePassword("");
+          return;
+        }
+
+        if (deleteOption === 'reverse' && deleteConfirmId.type === 'transfer' && deleteConfirmId.transferId) {
+          const transferType =
+            relevantTxs[0]?.type === "office_transfer_created" ? "office_transfer" : "factory_transfer";
+          await reverseAdvancedGroup(transferType, deleteConfirmId.transferId, user?.company);
+          toast({
+            title: "Success",
+            description: `Reversed transfer with ${relevantTxs.length} items`,
+          });
+          setDeleteConfirmId(null);
+          setDeletePassword("");
           return;
         }
 
@@ -1052,25 +1197,49 @@ export default function HistoryPage() {
                               {processType} Process ({processTransactions.length} items)
                             </p>
                             <div className="flex items-center gap-2 mt-1 flex-wrap">
+                              {firstTx.edited && (
+                                <Badge className="bg-amber-100 text-amber-700 text-xs">Edited</Badge>
+                              )}
                               <span className="text-xs text-slate-500">
                                 <span className="font-medium text-slate-700">{firstTx.user.name}</span>
                               </span>
                               <span className="text-xs text-slate-400">
                                 {formatExactTime(firstTx.timestamp)}
                               </span>
+                              {formatBusinessDate(firstTx.businessDate) && (
+                                <span className="text-xs text-slate-500">
+                                  Business: <span className="font-medium text-slate-700">{formatBusinessDate(firstTx.businessDate)}</span>
+                                </span>
+                              )}
                             </div>
                           </div>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-8 px-2 text-red-600 hover:text-red-700 hover:bg-red-50"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDeleteTransaction(item.id, true);
-                            }}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
+                          <div className="flex items-center gap-1">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 px-2 text-slate-600 hover:text-slate-700 hover:bg-slate-100"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openEditDialog("process", item.id, processTransactions, {
+                                  title: "Edit Heat Treatment",
+                                  processSerialNumber: firstTx.processSerialNumber,
+                                });
+                              }}
+                            >
+                              <Pencil className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 px-2 text-red-600 hover:text-red-700 hover:bg-red-50"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteTransaction(item.id, true);
+                              }}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
                         </div>
 
                         {/* Process Group Items */}
@@ -1164,25 +1333,48 @@ export default function HistoryPage() {
                               {transferType} ({transferTransactions.length} items)
                             </p>
                             <div className="flex items-center gap-2 mt-1 flex-wrap">
+                              {firstTx.edited && (
+                                <Badge className="bg-amber-100 text-amber-700 text-xs">Edited</Badge>
+                              )}
                               <span className="text-xs text-slate-500">
                                 <span className="font-medium text-slate-700">{firstTx.user.name}</span>
                               </span>
                               <span className="text-xs text-slate-400">
                                 {formatExactTime(firstTx.timestamp)}
                               </span>
+                              {formatBusinessDate(firstTx.businessDate) && (
+                                <span className="text-xs text-slate-500">
+                                  Business: <span className="font-medium text-slate-700">{formatBusinessDate(firstTx.businessDate)}</span>
+                                </span>
+                              )}
                             </div>
                           </div>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-8 px-2 text-red-600 hover:text-red-700 hover:bg-red-50"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDeleteTransaction(item.id, true);
-                            }}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
+                          <div className="flex items-center gap-1">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 px-2 text-slate-600 hover:text-slate-700 hover:bg-slate-100"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openEditDialog(item.transferType, item.id, transferTransactions, {
+                                  title: item.transferType === "factory_transfer" ? "Edit Factory Transfer" : "Edit Office Transfer",
+                                });
+                              }}
+                            >
+                              <Pencil className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 px-2 text-red-600 hover:text-red-700 hover:bg-red-50"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteTransaction(item.id, true);
+                              }}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
                         </div>
 
                         {/* Transfer Group Items */}
@@ -1261,25 +1453,53 @@ export default function HistoryPage() {
                               Sold by {item.salesCompany} ({salesTransactions.length} items)
                             </p>
                             <div className="flex items-center gap-2 mt-1 flex-wrap">
+                              {firstTx.edited && (
+                                <Badge className="bg-amber-100 text-amber-700 text-xs">Edited</Badge>
+                              )}
                               <span className="text-xs text-slate-500">
                                 <span className="font-medium text-slate-700">{firstTx.user.name}</span>
                               </span>
                               <span className="text-xs text-slate-400">
                                 {formatExactTime(firstTx.timestamp)}
                               </span>
+                              {formatBusinessDate(firstTx.businessDate) && (
+                                <span className="text-xs text-slate-500">
+                                  Business: <span className="font-medium text-slate-700">{formatBusinessDate(firstTx.businessDate)}</span>
+                                </span>
+                              )}
+                              {firstTx.notes && (
+                                <span className="text-xs text-slate-500">
+                                  Remarks: <span className="font-medium text-slate-700">{firstTx.notes}</span>
+                                </span>
+                              )}
                             </div>
                           </div>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-8 px-2 text-red-600 hover:text-red-700 hover:bg-red-50"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDeleteTransaction(item.id, true);
-                            }}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
+                          <div className="flex items-center gap-1">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 px-2 text-slate-600 hover:text-slate-700 hover:bg-slate-100"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openEditDialog("sales", item.id, salesTransactions, {
+                                  title: "Edit Sale",
+                                });
+                              }}
+                            >
+                              <Pencil className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 px-2 text-red-600 hover:text-red-700 hover:bg-red-50"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteTransaction(item.id, true);
+                              }}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
                         </div>
 
                         {/* Sales Group Items */}
@@ -1353,6 +1573,9 @@ export default function HistoryPage() {
                               <p className="text-sm font-semibold text-slate-900 truncate">
                                 {capitalize(entry.itemId)}
                               </p>
+                              {entry.edited && (
+                                <Badge className="bg-amber-100 text-amber-700 text-xs">Edited</Badge>
+                              )}
                               {entry.type === 'creation' && (
                                 <Badge className="bg-blue-100 text-blue-700 text-xs">NEW</Badge>
                               )}
@@ -1384,6 +1607,16 @@ export default function HistoryPage() {
                               <span className="text-xs text-slate-400">
                                 {formatExactTime(entry.timestamp)}
                               </span>
+                              {formatBusinessDate(entry.businessDate) && (
+                                <span className="text-xs text-slate-500">
+                                  Business: <span className="font-medium text-slate-700">{formatBusinessDate(entry.businessDate)}</span>
+                                </span>
+                              )}
+                              {entry.notes && (
+                                <span className="text-xs text-slate-500">
+                                  Remarks: <span className="font-medium text-slate-700">{entry.notes}</span>
+                                </span>
+                              )}
                             </div>
                             <div className="flex items-center gap-2 mt-1">
                               {entry.type === 'creation' ? (
@@ -1401,6 +1634,32 @@ export default function HistoryPage() {
                           <div className={`text-sm font-black flex-shrink-0 ${isIncrease ? 'text-emerald-600' : 'text-red-600'}`}>
                             {isIncrease ? '+' : ''}{entry.quantityChange}
                           </div>
+                          {(entry.type === 'heat_treatment_created' || entry.type === 'factory_transfer_created' || entry.type === 'office_transfer_created' || entry.type === 'sales') && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 px-2 text-slate-600 hover:text-slate-700 hover:bg-slate-100"
+                              onClick={() =>
+                                openEditDialog(
+                                  entry.type === "heat_treatment_created"
+                                    ? "process"
+                                    : entry.type === "factory_transfer_created"
+                                    ? "factory_transfer"
+                                    : entry.type === "office_transfer_created"
+                                    ? "office_transfer"
+                                    : "sales",
+                                  entry.processId || entry.transferId || entry.salesId || entry.id,
+                                  [entry],
+                                  {
+                                    title: "Edit Entry",
+                                    processSerialNumber: entry.processSerialNumber,
+                                  }
+                                )
+                              }
+                            >
+                              <Pencil className="h-4 w-4" />
+                            </Button>
+                          )}
                           <Button
                             variant="ghost"
                             size="sm"
@@ -1418,6 +1677,200 @@ export default function HistoryPage() {
             </div>
           </CardContent>
         </Card>
+
+        <Dialog
+          open={editState !== null}
+          onOpenChange={(open) => {
+            if (!open) {
+              setEditState(null);
+              setEditPassword("");
+            }
+          }}
+        >
+          <DialogContent className="sm:max-w-[640px] max-h-[85vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>{editState?.title || "Edit Entry"}</DialogTitle>
+              <DialogDescription>
+                Update the transaction details, then confirm with the password to apply the edit in place.
+              </DialogDescription>
+            </DialogHeader>
+
+            {editState && (
+              <div className="space-y-4 py-2">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Business Date</Label>
+                    <Input
+                      type="date"
+                      value={editState.businessDate}
+                      onChange={(e) => setEditState({ ...editState, businessDate: e.target.value })}
+                    />
+                  </div>
+
+                  {editState.type === "process" ? (
+                    <div>
+                      <Label className="text-sm font-medium text-slate-700">Serial Number</Label>
+                      <Input
+                        value={editState.processSerialNumber}
+                        onChange={(e) => setEditState({ ...editState, processSerialNumber: e.target.value })}
+                        placeholder="Serial number"
+                      />
+                    </div>
+                  ) : editState.type === "sales" ? (
+                    <div>
+                      <Label className="text-sm font-medium text-slate-700">Selling Company</Label>
+                      <Select
+                        value={editState.salesCompany}
+                        onValueChange={(value: "CEC" | "AGW" | "BRP") => setEditState({ ...editState, salesCompany: value })}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select company" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="CEC">CEC</SelectItem>
+                          <SelectItem value="AGW">AGW</SelectItem>
+                          <SelectItem value="BRP">BRP</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  ) : null}
+                </div>
+
+                {editState.type === "sales" && (
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Remarks</Label>
+                    <Input
+                      value={editState.remarks}
+                      onChange={(e) => setEditState({ ...editState, remarks: e.target.value })}
+                      placeholder="Optional remarks"
+                    />
+                  </div>
+                )}
+
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-sm font-medium text-slate-700">Items</Label>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() =>
+                        setEditState({
+                          ...editState,
+                          rows: [...editState.rows, { id: "", quantity: "" }],
+                        })
+                      }
+                    >
+                      Add Row
+                    </Button>
+                  </div>
+
+                  {editState.rows.map((row, index) => {
+                    const rowItem = items.find((item) => item.id === row.id);
+                    const availableBalance =
+                      editState.type === "process"
+                        ? (rowItem?.heatTreatmentBalance || 0) + (parseInt(row.quantity || "0", 10) || 0)
+                        : editState.type === "factory_transfer"
+                        ? (rowItem?.heatTreatmentBalance || 0) + (parseInt(row.quantity || "0", 10) || 0)
+                        : editState.type === "office_transfer"
+                        ? (rowItem?.factoryBalance || 0) + (parseInt(row.quantity || "0", 10) || 0)
+                        : (rowItem?.officeBalance || 0) + (parseInt(row.quantity || "0", 10) || 0);
+
+                    const selectableItems = items.filter((item) => {
+                      if (editState.type === "process") return true;
+                      if (editState.type === "factory_transfer") {
+                        return (item.heatTreatmentBalance || 0) > 0 || item.id === row.id;
+                      }
+                      if (editState.type === "office_transfer") {
+                        return (item.factoryBalance || 0) > 0 || item.id === row.id;
+                      }
+                      return (item.officeBalance || 0) > 0 || item.id === row.id;
+                    });
+
+                    return (
+                      <div key={index} className="grid gap-3 rounded-lg border border-slate-200 p-3 sm:grid-cols-[1fr_120px_52px]">
+                        <div>
+                          <Label className="text-xs font-semibold">Item</Label>
+                          <SearchableSelect
+                            value={row.id}
+                            onValueChange={(value) => {
+                              const rows = [...editState.rows];
+                              rows[index] = { ...rows[index], id: value };
+                              setEditState({ ...editState, rows });
+                            }}
+                            placeholder="Select item"
+                            items={selectableItems.map((item) => ({
+                              id: item.id,
+                              label: `${capitalize(item.name)} - ${capitalize(item.category)}`,
+                            }))}
+                          />
+                        </div>
+
+                        <div>
+                          <Label className="text-xs font-semibold">Quantity</Label>
+                          <Input
+                            type="number"
+                            min="1"
+                            max={availableBalance}
+                            value={row.quantity}
+                            onChange={(e) => {
+                              const rows = [...editState.rows];
+                              rows[index] = { ...rows[index], quantity: e.target.value };
+                              setEditState({ ...editState, rows });
+                            }}
+                          />
+                        </div>
+
+                        <div className="flex items-end">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="w-full text-red-600 hover:text-red-700 hover:bg-red-50"
+                            onClick={() => {
+                              const rows = editState.rows.filter((_, rowIndex) => rowIndex !== index);
+                              setEditState({
+                                ...editState,
+                                rows: rows.length > 0 ? rows : [{ id: "", quantity: "" }],
+                              });
+                            }}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div>
+                  <Label className="text-sm font-medium text-slate-700">Password</Label>
+                  <Input
+                    type="password"
+                    inputMode="numeric"
+                    maxLength={4}
+                    placeholder="Enter 4-digit password"
+                    value={editPassword}
+                    onChange={(e) => setEditPassword(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                  />
+                </div>
+              </div>
+            )}
+
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setEditState(null);
+                  setEditPassword("");
+                }}
+              >
+                Cancel
+              </Button>
+              <Button onClick={handleEditConfirm} disabled={isEditSubmitting}>
+                {isEditSubmitting ? "Saving..." : "Confirm Edit"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {/* Delete Confirmation Dialog */}
         <Dialog
