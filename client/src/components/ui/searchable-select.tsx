@@ -94,9 +94,11 @@ export function SearchableSelect({
         </div>
       </PopoverTrigger>
       <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0 z-50" align="start">
-        <Command className="overflow-visible">
+        <Command>
           <CommandEmpty>No items found.</CommandEmpty>
-          <CommandGroup className="h-[200px] overflow-y-scroll overflow-x-hidden">
+          <CommandGroup 
+            className="h-[200px] overflow-y-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+          >
             {filteredItems.length > 0 ? (
               filteredItems.map((item) => (
                 <CommandItem
