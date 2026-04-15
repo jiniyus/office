@@ -79,6 +79,7 @@ interface ProcessStockSnapshot {
 }
 
 export default function ProcessPage() {
+  const PROCESS_DELETE_PASSWORD = "2026";
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isFactoryTransferModalOpen, setIsFactoryTransferModalOpen] = useState(false);
   const [isOfficeTransferModalOpen, setIsOfficeTransferModalOpen] = useState(false);
@@ -339,6 +340,19 @@ export default function ProcessPage() {
       if (!processToDelete) return;
 
       if (processToDelete.processType === "heat_treatment") {
+        const password = window.prompt("Enter the 4-digit password to delete and revert this heat treatment entry:");
+        if (password === null) {
+          return;
+        }
+        if (password !== PROCESS_DELETE_PASSWORD) {
+          toast({
+            variant: "destructive",
+            title: "Incorrect password",
+            description: "Enter the 4-digit password to manually delete this heat treatment entry.",
+          });
+          return;
+        }
+
         const [processSnapshot, processTxSnapshot, stockItemsSnapshot] = await Promise.all([
           getDoc(doc(db, "processes", processId)),
           getDocs(query(collection(db, "transactions"), where("processId", "==", processId))),

@@ -76,7 +76,7 @@ export default function Stock() {
     id: "",
     quantity: "",
   }]);
-  const [selectedSalesCompany, setSelectedSalesCompany] = useState<"CEC" | "AGW" | "BHP" | "">("");
+  const [selectedSalesCompany, setSelectedSalesCompany] = useState<"CEC" | "AGW" | "BRP" | "">("");
   const [newProduct, setNewProduct] = useState({
     name: "",
     category: "",
@@ -1306,7 +1306,7 @@ export default function Stock() {
                 <SelectContent>
                   <SelectItem value="CEC">CEC</SelectItem>
                   <SelectItem value="AGW">AGW</SelectItem>
-                  <SelectItem value="BHP">BHP</SelectItem>
+                  <SelectItem value="BRP">BRP</SelectItem>
                 </SelectContent>
               </Select>
             </div>

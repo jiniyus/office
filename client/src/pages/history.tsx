@@ -59,12 +59,14 @@ interface HistoryProcessTransaction {
 }
 
 export default function HistoryPage() {
+  const HISTORY_ACTION_PASSWORD = "2026";
   const { transactions, loading } = useTransactions();
   const { locations } = useLocations();
   const { user } = useAuth();
   const [selectedDate, setSelectedDate] = useState<string>("");
   const [expandedBulkId, setExpandedBulkId] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<any>(null);
+  const [deletePassword, setDeletePassword] = useState("");
   const [selectedFilters, setSelectedFilters] = useState<string[]>([]);
   const [expandedSalesFilter, setExpandedSalesFilter] = useState(false);
   const { toast } = useToast();
@@ -312,8 +314,22 @@ export default function HistoryPage() {
     }
   };
 
+  const validateHistoryPassword = (password: string) => {
+    if (password !== HISTORY_ACTION_PASSWORD) {
+      toast({
+        variant: "destructive",
+        title: "Incorrect password",
+        description: "Enter the 4-digit password to delete or reverse history.",
+      });
+      return false;
+    }
+
+    return true;
+  };
+
   const executeDelete = async (deleteOption: 'delete' | 'reverse') => {
     if (!deleteConfirmId) return;
+    if (!validateHistoryPassword(deletePassword)) return;
 
     try {
       if (deleteConfirmId.isBulkGroup) {
@@ -494,6 +510,7 @@ export default function HistoryPage() {
         }
       }
       setDeleteConfirmId(null);
+      setDeletePassword("");
     } catch (error) {
       console.error("Error deleting transaction:", error);
       toast({
@@ -611,6 +628,14 @@ export default function HistoryPage() {
   };
 
   const handleDeleteHistoryByRange = async (range: 'lastMonth' | 'lastQuarter' | 'lastYear' | 'allTime') => {
+    const password = window.prompt("Enter the 4-digit password to delete history:");
+    if (password === null) {
+      return;
+    }
+    if (!validateHistoryPassword(password)) {
+      return;
+    }
+
     if (!confirm(`Are you sure you want to delete transactions from the last ${range === 'lastMonth' ? 'month' : range === 'lastQuarter' ? 'quarter' : range === 'lastYear' ? 'year' : 'all time'}? This cannot be undone.`)) {
       return;
     }
@@ -820,7 +845,7 @@ export default function HistoryPage() {
                         {/* Sales Company Options */}
                         {expandedSalesFilter && (
                           <div className="space-y-2 mt-2 ml-6">
-                            {['CEC', 'AGW', 'BHP'].map((company) => (
+                            {['CEC', 'AGW', 'BRP'].map((company) => (
                               <label key={company} className="flex items-center gap-2 cursor-pointer">
                                 <input
                                   type="checkbox"
@@ -1395,7 +1420,15 @@ export default function HistoryPage() {
         </Card>
 
         {/* Delete Confirmation Dialog */}
-        <Dialog open={deleteConfirmId !== null} onOpenChange={(open) => !open && setDeleteConfirmId(null)}>
+        <Dialog
+          open={deleteConfirmId !== null}
+          onOpenChange={(open) => {
+            if (!open) {
+              setDeleteConfirmId(null);
+              setDeletePassword("");
+            }
+          }}
+        >
           <DialogContent className="sm:max-w-[500px]">
             <DialogHeader>
               <DialogTitle>Delete Transaction</DialogTitle>
@@ -1409,6 +1442,20 @@ export default function HistoryPage() {
               <p className="text-sm text-slate-600">
                 <strong>Choose an action:</strong>
               </p>
+              <div className="space-y-2">
+                <label htmlFor="history-action-password" className="text-sm font-medium text-slate-700">
+                  4-digit password
+                </label>
+                <Input
+                  id="history-action-password"
+                  type="password"
+                  inputMode="numeric"
+                  maxLength={4}
+                  placeholder="Enter password"
+                  value={deletePassword}
+                  onChange={(e) => setDeletePassword(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                />
+              </div>
               <div className="space-y-2">
                 {canReverseDelete && (
                   <Button
@@ -1435,7 +1482,15 @@ export default function HistoryPage() {
               </div>
             </div>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setDeleteConfirmId(null)}>Cancel</Button>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setDeleteConfirmId(null);
+                  setDeletePassword("");
+                }}
+              >
+                Cancel
+              </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>

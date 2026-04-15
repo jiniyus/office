@@ -48,7 +48,7 @@ export interface Transaction {
   processId?: string; // Reference to process if created from a process
   transferId?: string; // Reference to transfer if created from a transfer
   salesId?: string; // Groups related sales transactions
-  salesCompany?: string; // Company name for sales (CEC, AGW, BHP)
+  salesCompany?: string; // Company name for sales (CEC, AGW, BRP)
   affectedBalance?: string; // Track which balance field was affected (heatTreatmentBalance, factoryBalance, officeBalance, etc)
   previousHTBalance?: number; // Previous heat treatment balance
   previousFABalance?: number; // Previous factory balance
