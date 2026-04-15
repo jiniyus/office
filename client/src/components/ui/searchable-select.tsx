@@ -1,5 +1,5 @@
 import * as React from "react"
-import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from "@/components/ui/command"
+import { Command, CommandEmpty, CommandGroup, CommandItem } from "@/components/ui/command"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { ChevronsUpDown, Check } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -93,9 +93,12 @@ export function SearchableSelect({
           </div>
         </div>
       </PopoverTrigger>
-      <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0 z-50 max-h-[250px]" align="start">
-        <Command>
-          <CommandList className="max-h-[200px] overflow-y-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+      <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0 z-50" align="start">
+        <Command className="overflow-visible">
+          <div 
+            className="max-h-[200px] overflow-y-scroll overflow-x-hidden [scrollbar-width:none] [-ms-overflow-style:none] [-webkit-overflow-scrolling:touch] [&::-webkit-scrollbar]:hidden"
+            style={{ WebkitOverflowScrolling: 'touch' } as React.CSSProperties}
+          >
             <CommandEmpty>No items found.</CommandEmpty>
             <CommandGroup>
               {filteredItems.length > 0 ? (
@@ -119,7 +122,7 @@ export function SearchableSelect({
                 <div className="p-2 text-xs text-muted-foreground">No items found</div>
               )}
             </CommandGroup>
-          </CommandList>
+          </div>
         </Command>
       </PopoverContent>
     </Popover>
