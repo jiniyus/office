@@ -1,5 +1,4 @@
 import * as React from "react"
-import { Command, CommandEmpty, CommandGroup, CommandItem } from "@/components/ui/command"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { ChevronsUpDown, Check } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -93,37 +92,42 @@ export function SearchableSelect({
           </div>
         </div>
       </PopoverTrigger>
-      <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0 z-50" align="start">
-        <Command className="overflow-visible">
-          <div 
-            className="max-h-[200px] overflow-y-scroll overflow-x-hidden [scrollbar-width:none] [-ms-overflow-style:none] [-webkit-overflow-scrolling:touch] [&::-webkit-scrollbar]:hidden"
-            style={{ WebkitOverflowScrolling: 'touch' } as React.CSSProperties}
-          >
-            <CommandEmpty>No items found.</CommandEmpty>
-            <CommandGroup>
-              {filteredItems.length > 0 ? (
-                filteredItems.map((item) => (
-                  <CommandItem
-                    key={item.id}
-                    value={item.id}
-                    onSelect={() => handleSelect(item.id)}
-                    className="text-xs cursor-pointer py-2"
-                  >
-                    <Check
-                      className={cn(
-                        "mr-2 h-4 w-4",
-                        value === item.id ? "opacity-100" : "opacity-0"
-                      )}
-                    />
-                    {item.label}
-                  </CommandItem>
-                ))
-              ) : (
-                <div className="p-2 text-xs text-muted-foreground">No items found</div>
-              )}
-            </CommandGroup>
-          </div>
-        </Command>
+      <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] p-0">
+        <div 
+          className="w-full bg-popover text-popover-foreground rounded-md border border-input"
+          style={{
+            height: '200px',
+            overflow: 'auto',
+            WebkitOverflowScrolling: 'touch'
+          }}
+        >
+          {filteredItems.length === 0 ? (
+            <div className="py-6 text-center text-sm text-muted-foreground">
+              No items found.
+            </div>
+          ) : (
+            <div className="p-1">
+              {filteredItems.map((item) => (
+                <button
+                  key={item.id}
+                  onClick={() => handleSelect(item.id)}
+                  className={cn(
+                    "w-full flex items-center gap-2 px-2 py-2 text-xs text-left rounded-sm hover:bg-accent hover:text-accent-foreground cursor-pointer",
+                    value === item.id && "bg-accent text-accent-foreground"
+                  )}
+                >
+                  <Check
+                    className={cn(
+                      "h-4 w-4 flex-shrink-0",
+                      value === item.id ? "opacity-100" : "opacity-0"
+                    )}
+                  />
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </PopoverContent>
     </Popover>
   )
