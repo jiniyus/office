@@ -105,15 +105,17 @@ export function SearchableSelect({
           </div>
         </div>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] p-0">
+      <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] p-0 overflow-visible">
         <div
           ref={scrollRef}
-          className="w-full bg-popover text-popover-foreground rounded-md border border-input"
+          className="w-full bg-popover text-popover-foreground"
           style={{
             height: '200px',
-            overflow: 'auto',
+            overflowY: 'scroll',
+            overflowX: 'hidden',
             WebkitOverflowScrolling: 'touch',
             overscrollBehavior: 'contain',
+            scrollBehavior: 'smooth',
           }}
         >
           {filteredItems.length === 0 ? (
