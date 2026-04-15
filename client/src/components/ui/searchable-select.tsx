@@ -93,10 +93,10 @@ export function SearchableSelect({
           </div>
         </div>
       </PopoverTrigger>
-      <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0 max-h-[200px] overflow-hidden flex flex-col z-50" align="start">
-        <Command className="overflow-hidden flex flex-col">
+      <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0 z-50" align="start">
+        <Command className="overflow-visible">
           <CommandEmpty>No items found.</CommandEmpty>
-          <CommandGroup className="max-h-[180px] overflow-y-auto overscroll-contain flex-1">
+          <CommandGroup className="h-[200px] overflow-y-scroll overflow-x-hidden">
             {filteredItems.length > 0 ? (
               filteredItems.map((item) => (
                 <CommandItem
