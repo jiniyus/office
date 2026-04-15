@@ -93,17 +93,17 @@ export function SearchableSelect({
           </div>
         </div>
       </PopoverTrigger>
-      <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0 max-h-[80vh] md:max-h-[300px] overflow-hidden flex flex-col z-50" align="start">
+      <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0 max-h-[200px] overflow-hidden flex flex-col z-50" align="start">
         <Command className="overflow-hidden flex flex-col">
           <CommandEmpty>No items found.</CommandEmpty>
-          <CommandGroup className="max-h-[calc(80vh-0px)] md:max-h-[280px] overflow-y-auto overscroll-contain flex-1">
+          <CommandGroup className="max-h-[180px] overflow-y-auto overscroll-contain flex-1">
             {filteredItems.length > 0 ? (
               filteredItems.map((item) => (
                 <CommandItem
                   key={item.id}
                   value={item.id}
                   onSelect={() => handleSelect(item.id)}
-                  className="text-xs cursor-pointer"
+                  className="text-xs cursor-pointer py-2"
                 >
                   <Check
                     className={cn(
