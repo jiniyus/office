@@ -1,5 +1,5 @@
 import * as React from "react"
-import { Command, CommandEmpty, CommandGroup, CommandItem } from "@/components/ui/command"
+import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from "@/components/ui/command"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { ChevronsUpDown, Check } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -93,33 +93,33 @@ export function SearchableSelect({
           </div>
         </div>
       </PopoverTrigger>
-      <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0 z-50" align="start">
+      <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0 z-50 max-h-[250px]" align="start">
         <Command>
-          <CommandEmpty>No items found.</CommandEmpty>
-          <CommandGroup 
-            className="h-[200px] overflow-y-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
-          >
-            {filteredItems.length > 0 ? (
-              filteredItems.map((item) => (
-                <CommandItem
-                  key={item.id}
-                  value={item.id}
-                  onSelect={() => handleSelect(item.id)}
-                  className="text-xs cursor-pointer py-2"
-                >
-                  <Check
-                    className={cn(
-                      "mr-2 h-4 w-4",
-                      value === item.id ? "opacity-100" : "opacity-0"
-                    )}
-                  />
-                  {item.label}
-                </CommandItem>
-              ))
-            ) : (
-              <div className="p-2 text-xs text-muted-foreground">No items found</div>
-            )}
-          </CommandGroup>
+          <CommandList className="max-h-[200px] overflow-y-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+            <CommandEmpty>No items found.</CommandEmpty>
+            <CommandGroup>
+              {filteredItems.length > 0 ? (
+                filteredItems.map((item) => (
+                  <CommandItem
+                    key={item.id}
+                    value={item.id}
+                    onSelect={() => handleSelect(item.id)}
+                    className="text-xs cursor-pointer py-2"
+                  >
+                    <Check
+                      className={cn(
+                        "mr-2 h-4 w-4",
+                        value === item.id ? "opacity-100" : "opacity-0"
+                      )}
+                    />
+                    {item.label}
+                  </CommandItem>
+                ))
+              ) : (
+                <div className="p-2 text-xs text-muted-foreground">No items found</div>
+              )}
+            </CommandGroup>
+          </CommandList>
         </Command>
       </PopoverContent>
     </Popover>
