@@ -8,7 +8,7 @@ import { useTransactions, useLocations, useStockItems } from "@/lib/firestore-ho
 import { useState, useMemo } from "react";
 import { Spinner } from "@/components/ui/spinner";
 import { format } from "date-fns";
-import { capitalize } from "@/lib/utils";
+import { capitalize, naturalCompare } from "@/lib/utils";
 import { SearchableSelect } from "@/components/ui/searchable-select";
 import { Label } from "@/components/ui/label";
 import {
@@ -668,9 +668,7 @@ export default function HistoryPage() {
 
   const sortItemsByName = (items: any[]) => {
     return [...items].sort((a, b) => {
-      const nameA = a.itemId.toLowerCase();
-      const nameB = b.itemId.toLowerCase();
-      return nameA.localeCompare(nameB);
+      return naturalCompare(a.itemId, b.itemId);
     });
   };
 
@@ -1784,64 +1782,90 @@ export default function HistoryPage() {
                         return (item.factoryBalance || 0) > 0 || item.id === row.id;
                       }
                       return (item.officeBalance || 0) > 0 || item.id === row.id;
+                    }).sort((a, b) => {
+                      const nameCompare = naturalCompare(a.name, b.name);
+                      if (nameCompare !== 0) return nameCompare;
+                      return naturalCompare(a.category, b.category);
                     });
 
                     return (
-                      <div key={index} className="grid gap-3 rounded-lg border border-slate-200 p-3 sm:grid-cols-[1fr_120px_52px]">
-                        <div>
-                          <Label className="text-xs font-semibold">Item</Label>
-                          <SearchableSelect
-                            value={row.id}
-                            onValueChange={(value) => {
-                              const rows = [...editState.rows];
-                              rows[index] = { ...rows[index], id: value };
-                              setEditState({ ...editState, rows });
-                            }}
-                            placeholder="Select item"
-                            items={selectableItems.map((item) => ({
-                              id: item.id,
-                              label: `${capitalize(item.name)} - ${capitalize(item.category)}`,
-                            }))}
-                          />
+                      <>
+                        <div key={index} className="grid gap-3 rounded-lg border border-slate-200 p-3 sm:grid-cols-[1fr_120px_52px]">
+                          <div>
+                            <Label className="text-xs font-semibold">Item</Label>
+                            <SearchableSelect
+                              value={row.id}
+                              onValueChange={(value) => {
+                                const rows = [...editState.rows];
+                                rows[index] = { ...rows[index], id: value };
+                                setEditState({ ...editState, rows });
+                              }}
+                              placeholder="Select item"
+                              items={selectableItems.map((item) => ({
+                                id: item.id,
+                                label: `${capitalize(item.name)} - ${capitalize(item.category)}`,
+                              }))}
+                            />
+                          </div>
+
+                          <div>
+                            <Label className="text-xs font-semibold">Quantity</Label>
+                            <Input
+                              type="number"
+                              min="1"
+                              max={availableBalance}
+                              value={row.quantity}
+                              onChange={(e) => {
+                                const rows = [...editState.rows];
+                                rows[index] = { ...rows[index], quantity: e.target.value };
+                                setEditState({ ...editState, rows });
+                              }}
+                            />
+                          </div>
+
+                          <div className="flex items-end">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="w-full text-red-600 hover:text-red-700 hover:bg-red-50"
+                              onClick={() => {
+                                const rows = editState.rows.filter((_, rowIndex) => rowIndex !== index);
+                                setEditState({
+                                  ...editState,
+                                  rows: rows.length > 0 ? rows : [{ id: "", quantity: "" }],
+                                });
+                              }}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
                         </div>
 
-                        <div>
-                          <Label className="text-xs font-semibold">Quantity</Label>
-                          <Input
-                            type="number"
-                            min="1"
-                            max={availableBalance}
-                            value={row.quantity}
-                            onChange={(e) => {
-                              const rows = [...editState.rows];
-                              rows[index] = { ...rows[index], quantity: e.target.value };
-                              setEditState({ ...editState, rows });
-                            }}
-                          />
-                        </div>
-
-                        <div className="flex items-end">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="w-full text-red-600 hover:text-red-700 hover:bg-red-50"
-                            onClick={() => {
-                              const rows = editState.rows.filter((_, rowIndex) => rowIndex !== index);
-                              setEditState({
-                                ...editState,
-                                rows: rows.length > 0 ? rows : [{ id: "", quantity: "" }],
-                              });
-                            }}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </div>
-                      </div>
+                        {/* Show balance info based on transaction type */}
+                        {rowItem && editState?.type === "process" && (
+                          <div className="p-2 bg-blue-50 rounded border border-blue-200 text-xs text-blue-700 font-semibold col-span-full mt-2">
+                            HT Balance: {rowItem.heatTreatmentBalance || 0} | FA Balance: {rowItem.factoryBalance || 0} | OF Balance: {rowItem.officeBalance || 0}
+                          </div>
+                        )}
+                        {rowItem && editState?.type === "factory_transfer" && (
+                          <div className="p-2 bg-blue-50 rounded border border-blue-200 text-xs text-blue-700 font-semibold col-span-full mt-2">
+                            HT Balance: {rowItem.heatTreatmentBalance || 0} | FA Balance: {rowItem.factoryBalance || 0} | OF Balance: {rowItem.officeBalance || 0}
+                          </div>
+                        )}
+                        {rowItem && editState?.type === "office_transfer" && (
+                          <div className="p-2 bg-blue-50 rounded border border-blue-200 text-xs text-blue-700 font-semibold col-span-full mt-2">
+                            HT Balance: {rowItem.heatTreatmentBalance || 0} | FA Balance: {rowItem.factoryBalance || 0} | OF Balance: {rowItem.officeBalance || 0}
+                          </div>
+                        )}
+                        {rowItem && editState?.type === "sales" && (
+                          <div className="p-2 bg-blue-50 rounded border border-blue-200 text-xs text-blue-700 font-semibold col-span-full mt-2">
+                            OF Balance: {rowItem.officeBalance || 0}
+                          </div>
+                        )}
+                      </>
                     );
                   })}
-                </div>
-
-                <div>
+                </div><div>
                   <Label className="text-sm font-medium text-slate-700">Password</Label>
                   <Input
                     type="password"

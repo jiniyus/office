@@ -21,7 +21,7 @@ import { useAuth } from "@/lib/auth";
 import { collection, addDoc, Timestamp, deleteDoc, doc, updateDoc, getDocs, query, where, onSnapshot, getDoc } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useToast } from "@/hooks/use-toast";
-import { capitalize } from "@/lib/utils";
+import { capitalize, naturalCompare } from "@/lib/utils";
 import { format } from "date-fns";
 
 interface ProcessRow {
@@ -103,18 +103,13 @@ export default function ProcessPage() {
   const { user } = useAuth();
   const { toast } = useToast();
 
-  // Helper function to sort items by name and category
+  // Helper function to sort items by name and category using natural sort
   const sortItems = (itemsToSort: typeof items) => {
     return [...itemsToSort].sort((a, b) => {
-      const nameA = a.name.toLowerCase();
-      const nameB = b.name.toLowerCase();
-      const catA = a.category.toLowerCase();
-      const catB = b.category.toLowerCase();
-      
-      const nameCompare = nameA.localeCompare(nameB);
+      const nameCompare = naturalCompare(a.name, b.name);
       if (nameCompare !== 0) return nameCompare;
       
-      return catA.localeCompare(catB);
+      return naturalCompare(a.category, b.category);
     });
   };
 
@@ -894,7 +889,7 @@ export default function ProcessPage() {
 
       {/* Process Modal */}
       <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
-        <DialogContent className="sm:max-w-[600px]">
+        <DialogContent className="sm:max-w-[600px] max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>
               {selectedProcess && capitalize(selectedProcess.replace("_", " "))}
@@ -904,7 +899,7 @@ export default function ProcessPage() {
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-4 py-4">
+          <div className="space-y-4 py-2">
             {/* Serial Number and Date */}
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -1093,13 +1088,13 @@ export default function ProcessPage() {
 
       {/* Factory Transfer Modal */}
       <Dialog open={isFactoryTransferModalOpen} onOpenChange={setIsFactoryTransferModalOpen}>
-        <DialogContent className="sm:max-w-[600px]">
+        <DialogContent className="sm:max-w-[600px] max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Transfer to Factory</DialogTitle>
             <DialogDescription>Transfer items from Heat Treatment to Factory location</DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-4">
+          <div className="space-y-4 py-2">
             <div>
               <Label className="text-xs mb-1 block font-semibold">Date</Label>
               <Input
@@ -1250,13 +1245,13 @@ export default function ProcessPage() {
 
       {/* Office Transfer Modal */}
       <Dialog open={isOfficeTransferModalOpen} onOpenChange={setIsOfficeTransferModalOpen}>
-        <DialogContent className="sm:max-w-[600px]">
+        <DialogContent className="sm:max-w-[600px] max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Transfer to Office</DialogTitle>
             <DialogDescription>Transfer items from Factory to Office location</DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-4">
+          <div className="space-y-4 py-2">
             <div>
               <Label className="text-xs mb-1 block font-semibold">Date</Label>
               <Input

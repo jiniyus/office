@@ -34,7 +34,7 @@ import { useAuth } from "@/lib/auth";
 import { collection, addDoc, Timestamp, updateDoc, doc, deleteDoc, getDocs, query, where } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useToast } from "@/hooks/use-toast";
-import { capitalize } from "@/lib/utils";
+import { capitalize, naturalCompare } from "@/lib/utils";
 
 export default function Stock() {
   const [searchTerm, setSearchTerm] = useState("");
@@ -134,18 +134,13 @@ export default function Stock() {
   const { user } = useAuth();
   const { toast } = useToast();
 
-  // Helper function to sort items by name and category
+  // Helper function to sort items by name and category using natural sort
   const sortItems = (itemsToSort: typeof items) => {
     return [...itemsToSort].sort((a, b) => {
-      const nameA = a.name.toLowerCase();
-      const nameB = b.name.toLowerCase();
-      const catA = a.category.toLowerCase();
-      const catB = b.category.toLowerCase();
-      
-      const nameCompare = nameA.localeCompare(nameB);
+      const nameCompare = naturalCompare(a.name, b.name);
       if (nameCompare !== 0) return nameCompare;
       
-      return catA.localeCompare(catB);
+      return naturalCompare(a.category, b.category);
     });
   };
 
@@ -192,7 +187,11 @@ export default function Stock() {
       }
       
       return matchesSearch && matchesCategory && matchesName && matchesLocationBalance;
-    }).sort((a, b) => a.name.localeCompare(b.name));
+    }).sort((a, b) => {
+      const nameCompare = naturalCompare(a.name, b.name);
+      if (nameCompare !== 0) return nameCompare;
+      return naturalCompare(a.category, b.category);
+    });
   }, [items, searchTerm, selectedCategories, selectedNames, filterByLocationBalance]);
 
   const handleQuantityUpdate = async (itemId: string, delta: number) => {
@@ -721,21 +720,23 @@ export default function Stock() {
                         )}
                       </div>
                       <div className="space-y-2 max-h-40 overflow-y-auto">
-                        {items.map((item) => (
-                          <label key={item.id} className="flex items-center gap-2 cursor-pointer">
+                        {Array.from(new Set(items.map(item => item.name)))
+                          .sort((a, b) => naturalCompare(a, b))
+                          .map((name) => (
+                          <label key={name} className="flex items-center gap-2 cursor-pointer">
                             <input
                               type="checkbox"
-                              checked={selectedNames.includes(item.name)}
+                              checked={selectedNames.includes(name)}
                               onChange={(e) => {
                                 if (e.target.checked) {
-                                  setSelectedNames([...selectedNames, item.name]);
+                                  setSelectedNames([...selectedNames, name]);
                                 } else {
-                                  setSelectedNames(selectedNames.filter(n => n !== item.name));
+                                  setSelectedNames(selectedNames.filter(n => n !== name));
                                 }
                               }}
                               className="w-4 h-4 rounded border-slate-300 text-primary focus:ring-primary"
                             />
-                            <span className="text-sm text-slate-600">{capitalize(item.name)}</span>
+                            <span className="text-sm text-slate-600">{capitalize(name)}</span>
                           </label>
                         ))}
                       </div>
@@ -1113,7 +1114,7 @@ export default function Stock() {
             <DialogDescription>Add multiple stock adjustments at once. All changes will be recorded as a single bulk transaction.</DialogDescription>
           </DialogHeader>
           
-          <div className="space-y-2 py-4">
+          <div className="space-y-2 py-2">
             {bulkTransactionRows.map((row, index) => {
               const selectedItem = row.id ? items.find(i => i.id === row.id) : null;
               const isExpanded = expandedRowIndex === index;
@@ -1304,7 +1305,7 @@ export default function Stock() {
             <DialogDescription>Record sales by adding items and selecting the selling company.</DialogDescription>
           </DialogHeader>
           
-          <div className="space-y-4 py-4">
+          <div className="space-y-4 py-2">
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
                 <Label htmlFor="sales-date" className="text-sm font-semibold">Date *</Label>

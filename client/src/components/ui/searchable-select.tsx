@@ -1,5 +1,5 @@
 import * as React from "react"
-import { ChevronsUpDown, Check } from "lucide-react"
+import { ChevronsUpDown, Check, ChevronRight } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 interface SearchableSelectProps {
@@ -19,15 +19,66 @@ export function SearchableSelect({
 }: SearchableSelectProps) {
   const [open, setOpen] = React.useState(false)
   const [searchValue, setSearchValue] = React.useState("")
+  const [selectedCategory, setSelectedCategory] = React.useState<string | null>(null)
   const inputRef = React.useRef<HTMLInputElement>(null)
   const containerRef = React.useRef<HTMLDivElement>(null)
   const selectedLabel = items.find(item => item.id === value)?.label || ""
 
+  // Extract unique categories from items
+  const categories = React.useMemo(() => {
+    const cats = new Set<string>()
+    items.forEach(item => {
+      const match = item.label.match(/\s-\s(.+)$/)
+      if (match) cats.add(match[1])
+    })
+    return Array.from(cats).sort()
+  }, [items])
+
+  // Get items for selected category, sorted by smart search (prefix matches first)
+  const filteredItems = React.useMemo(() => {
+    let filtered = items
+    
+    // Filter by selected category if any
+    if (selectedCategory) {
+      filtered = items.filter(item => item.label.endsWith(` - ${selectedCategory}`))
+    }
+    
+    // Filter by search value (prioritize prefix matches)
+    if (searchValue) {
+      const searchLower = searchValue.toLowerCase()
+      const prefixMatches = filtered.filter(item =>
+        item.label.toLowerCase().startsWith(searchLower)
+      )
+      const otherMatches = filtered.filter(item =>
+        item.label.toLowerCase().includes(searchLower) &&
+        !item.label.toLowerCase().startsWith(searchLower)
+      )
+      filtered = [...prefixMatches, ...otherMatches]
+    }
+    
+    return filtered
+  }, [searchValue, selectedCategory, items])
+
+  // Get categories matching search
+  const filteredCategories = React.useMemo(() => {
+    if (!searchValue) return categories
+    const searchLower = searchValue.toLowerCase()
+    const prefixMatches = categories.filter(cat => cat.toLowerCase().startsWith(searchLower))
+    const otherMatches = categories.filter(cat =>
+      cat.toLowerCase().includes(searchLower) &&
+      !cat.toLowerCase().startsWith(searchLower)
+    )
+    return [...prefixMatches, ...otherMatches]
+  }, [searchValue, categories])
+
   React.useEffect(() => {
-    if (!open) return
+    if (!open) {
+      setSearchValue("")
+      setSelectedCategory(null)
+      return
+    }
     const focusTimer = window.setTimeout(() => {
       inputRef.current?.focus()
-      inputRef.current?.select()
     }, 0)
     return () => window.clearTimeout(focusTimer)
   }, [open])
@@ -38,6 +89,7 @@ export function SearchableSelect({
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         setOpen(false)
         setSearchValue("")
+        setSelectedCategory(null)
       }
     }
     document.addEventListener("mousedown", handleOutsideClick)
@@ -48,21 +100,32 @@ export function SearchableSelect({
     }
   }, [open])
 
-  const filteredItems = React.useMemo(() => {
-    if (!searchValue) return items
-    return items.filter(item =>
-      item.label.toLowerCase().includes(searchValue.toLowerCase())
-    )
-  }, [searchValue, items])
-
   const handleSelect = (id: string) => {
     onValueChange(id)
     setSearchValue("")
+    setSelectedCategory(null)
     setOpen(false)
   }
 
+  const handleCategorySelect = (category: string) => {
+    setSelectedCategory(category)
+    setSearchValue("")
+  }
+
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setSearchValue(e.target.value)
+    const newValue = e.target.value
+    setSearchValue(newValue)
+    // If user clears input, clear category selection
+    if (newValue === "") {
+      setSelectedCategory(null)
+    }
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    // Backspace with empty search clears category to go back
+    if (e.key === "Backspace" && searchValue === "" && selectedCategory) {
+      setSelectedCategory(null)
+    }
   }
 
   return (
@@ -74,6 +137,7 @@ export function SearchableSelect({
             type="text"
             value={searchValue}
             onChange={handleInputChange}
+            onKeyDown={handleKeyDown}
             placeholder={selectedLabel || placeholder}
             className={cn(
               "w-full px-3 py-1.5 pr-8 h-8 text-xs border border-input rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
@@ -101,37 +165,94 @@ export function SearchableSelect({
       {open && (
         <div className="absolute z-50 w-full mt-1 rounded-md border border-input bg-popover text-popover-foreground shadow-md"
           style={{
-            height: '200px',
+            height: '140px',
             overflow: 'auto',
             WebkitOverflowScrolling: 'touch',
             overscrollBehavior: 'contain',
           }}
         >
-          {filteredItems.length === 0 ? (
-            <div className="py-6 text-center text-sm text-muted-foreground">
-              No items found.
-            </div>
-          ) : (
-            <div className="p-1">
-              {filteredItems.map((item) => (
-                <button
-                  key={item.id}
-                  onClick={() => handleSelect(item.id)}
-                  className={cn(
-                    "w-full flex items-center gap-2 px-2 py-2 text-xs text-left rounded-sm hover:bg-accent hover:text-accent-foreground cursor-pointer",
-                    value === item.id && "bg-accent text-accent-foreground"
-                  )}
-                >
-                  <Check
+          {selectedCategory ? (
+            // Show filtered items for selected category
+            filteredItems.length === 0 ? (
+              <div className="py-6 text-center text-sm text-muted-foreground">
+                No items found.
+              </div>
+            ) : (
+              <div className="p-1">
+                {filteredItems.map((item) => (
+                  <button
+                    key={item.id}
+                    onClick={() => handleSelect(item.id)}
                     className={cn(
-                      "h-4 w-4 flex-shrink-0",
-                      value === item.id ? "opacity-100" : "opacity-0"
+                      "w-full flex items-center gap-2 px-2 py-2 text-xs text-left rounded-sm hover:bg-accent hover:text-accent-foreground cursor-pointer",
+                      value === item.id && "bg-accent text-accent-foreground"
                     )}
-                  />
-                  {item.label}
-                </button>
-              ))}
-            </div>
+                  >
+                    <Check
+                      className={cn(
+                        "h-4 w-4 flex-shrink-0",
+                        value === item.id ? "opacity-100" : "opacity-0"
+                      )}
+                    />
+                    <span className="truncate">{item.label.split(" - ")[0]}</span>
+                  </button>
+                ))}
+              </div>
+            )
+          ) : (
+            // Show categories or filtered items based on search
+            <>
+              {/* Show categories */}
+              {filteredCategories.length > 0 && (
+                <div className="p-1">
+                  {filteredCategories.map((category) => (
+                    <button
+                      key={category}
+                      onClick={() => handleCategorySelect(category)}
+                      className="w-full flex items-center gap-2 px-2 py-2 text-xs text-left rounded-sm hover:bg-accent hover:text-accent-foreground cursor-pointer"
+                    >
+                      <ChevronRight className="h-4 w-4 flex-shrink-0" />
+                      <span className="truncate font-semibold text-slate-600">{category}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              
+              {/* Show items matching search across all categories */}
+              {searchValue && filteredItems.length > 0 && (
+                <>
+                  {filteredCategories.length > 0 && (
+                    <div className="border-t border-slate-200"></div>
+                  )}
+                  <div className="p-1">
+                    {filteredItems.map((item) => (
+                      <button
+                        key={item.id}
+                        onClick={() => handleSelect(item.id)}
+                        className={cn(
+                          "w-full flex items-center gap-2 px-2 py-2 text-xs text-left rounded-sm hover:bg-accent hover:text-accent-foreground cursor-pointer",
+                          value === item.id && "bg-accent text-accent-foreground"
+                        )}
+                      >
+                        <Check
+                          className={cn(
+                            "h-4 w-4 flex-shrink-0",
+                            value === item.id ? "opacity-100" : "opacity-0"
+                          )}
+                        />
+                        <span className="truncate">{item.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              {filteredCategories.length === 0 && (!searchValue || filteredItems.length === 0) && (
+                <div className="py-6 text-center text-sm text-muted-foreground">
+                  No items found.
+                </div>
+              )}
+            </>
           )}
         </div>
       )}
