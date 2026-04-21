@@ -86,7 +86,7 @@ interface EditHistoryState {
 
 export default function HistoryPage() {
   const HISTORY_ACTION_PASSWORD = "2026";
-  const { transactions, loading } = useTransactions();
+  const { transactions, loading } = useTransactions(10000);
   const { locations } = useLocations();
   const { items } = useStockItems();
   const { user } = useAuth();
@@ -467,41 +467,44 @@ export default function HistoryPage() {
         }
         
         if (deleteOption === 'reverse' && deleteConfirmId.type === 'process' && deleteConfirmId.processId) {
-          await reverseAdvancedGroup('process', deleteConfirmId.processId, user?.company);
+          const processId = deleteConfirmId.processId;
+          setDeleteConfirmId(null);
+          setDeletePassword("");
+          await reverseAdvancedGroup('process', processId, user?.company);
           toast({
             title: "Success",
             description: `Reversed process with ${relevantTxs.length} items`,
           });
-          setDeleteConfirmId(null);
-          setDeletePassword("");
           return;
         }
 
         if (deleteOption === 'reverse' && deleteConfirmId.type === 'sales' && deleteConfirmId.salesId) {
-          await reverseAdvancedGroup('sales', deleteConfirmId.salesId, user?.company);
+          const salesId = deleteConfirmId.salesId;
+          setDeleteConfirmId(null);
+          setDeletePassword("");
+          await reverseAdvancedGroup('sales', salesId, user?.company);
           toast({
             title: "Success",
             description: `Reversed sale with ${relevantTxs.length} items`,
           });
-          setDeleteConfirmId(null);
-          setDeletePassword("");
           return;
         }
 
         if (deleteOption === 'reverse' && deleteConfirmId.type === 'transfer' && deleteConfirmId.transferId) {
+          const transferId = deleteConfirmId.transferId;
           const transferType =
             relevantTxs[0]?.type === "office_transfer_created" ? "office_transfer" : "factory_transfer";
-          await reverseAdvancedGroup(transferType, deleteConfirmId.transferId, user?.company);
+          setDeleteConfirmId(null);
+          setDeletePassword("");
+          await reverseAdvancedGroup(transferType, transferId, user?.company);
           toast({
             title: "Success",
             description: `Reversed transfer with ${relevantTxs.length} items`,
           });
-          setDeleteConfirmId(null);
-          setDeletePassword("");
           return;
         }
 
-        if (deleteOption === 'reverse' && (deleteConfirmId.type === 'bulk' || deleteConfirmId.type === 'process' || deleteConfirmId.type === 'transfer' || deleteConfirmId.type === 'sales')) {
+        if (deleteOption === 'reverse' && deleteConfirmId.type === 'bulk') {
           // Find all items and restore their previous balances
           const updatePromises = relevantTxs.map(tx => {
             // Get the item ID from itemId field
@@ -553,28 +556,18 @@ export default function HistoryPage() {
         await Promise.all(deletePromises);
 
         if (deleteOption === 'reverse') {
-          if (deleteConfirmId.type === 'transfer') {
-            toast({
-              title: "Success",
-              description: `Deleted ${relevantTxs.length} transfer record(s)`,
-            });
-          } else if (deleteConfirmId.type === 'sales') {
-            toast({
-              title: "Success",
-              description: `Deleted ${relevantTxs.length} sale record(s)`,
-            });
-          } else {
-            toast({
-              title: "Success",
-              description: `Reversed ${deleteConfirmId.type === 'bulk' ? 'bulk transaction' : 'process'} with ${relevantTxs.length} items`,
-            });
-          }
+          toast({
+            title: "Success",
+            description: `Reversed bulk transaction with ${relevantTxs.length} items`,
+          });
         } else {
           toast({
             title: "Success",
-            description: `Deleted ${deleteConfirmId.type === 'bulk' ? 'bulk transaction' : deleteConfirmId.type === 'process' ? 'process' : deleteConfirmId.type === 'transfer' ? 'transfer' : 'sale'} log with ${relevantTxs.length} items`,
+            description: `Deleted bulk transaction log with ${relevantTxs.length} items`,
           });
         }
+        setDeleteConfirmId(null);
+        setDeletePassword("");
       } else {
         // Delete single transaction
         const tx = filteredTransactions.find(t => t.id === deleteConfirmId.id);
@@ -663,6 +656,9 @@ export default function HistoryPage() {
         title: "Error",
         description: "Failed to delete transaction",
       });
+    } finally {
+      setDeleteConfirmId(null);
+      setDeletePassword("");
     }
   };
 
@@ -898,10 +894,10 @@ export default function HistoryPage() {
                   )}
                 </Button>
               </PopoverTrigger>
-              <PopoverContent className="w-64 p-3" align="start">
-                <div className="space-y-3">
-                  <div>
-                    <div className="flex items-center justify-between mb-3">
+              <PopoverContent className="w-64 p-0" align="start">
+                <div className="flex flex-col h-96">
+                  <div className="p-3 border-b border-slate-200 flex-shrink-0">
+                    <div className="flex items-center justify-between">
                       <h3 className="text-sm font-semibold text-slate-700">Filter By Type</h3>
                       {selectedFilters.length > 0 && (
                         <Button
@@ -914,99 +910,103 @@ export default function HistoryPage() {
                         </Button>
                       )}
                     </div>
-                    <div className="space-y-2">
-                      {/* Heat Treatment */}
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={selectedFilters.includes('heat_treatment')}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setSelectedFilters([...selectedFilters, 'heat_treatment']);
-                            } else {
-                              setSelectedFilters(selectedFilters.filter(f => f !== 'heat_treatment'));
-                            }
-                          }}
-                          className="w-4 h-4 rounded border-slate-300 text-primary focus:ring-primary"
-                        />
-                        <span className="text-sm text-slate-600">Heat Treatment</span>
-                      </label>
-                      
-                      {/* Transfer to Factory */}
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={selectedFilters.includes('transfer_factory')}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setSelectedFilters([...selectedFilters, 'transfer_factory']);
-                            } else {
-                              setSelectedFilters(selectedFilters.filter(f => f !== 'transfer_factory'));
-                            }
-                          }}
-                          className="w-4 h-4 rounded border-slate-300 text-primary focus:ring-primary"
-                        />
-                        <span className="text-sm text-slate-600">Transfer to Factory</span>
-                      </label>
-                      
-                      {/* Transfer to Office */}
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={selectedFilters.includes('transfer_office')}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setSelectedFilters([...selectedFilters, 'transfer_office']);
-                            } else {
-                              setSelectedFilters(selectedFilters.filter(f => f !== 'transfer_office'));
-                            }
-                          }}
-                          className="w-4 h-4 rounded border-slate-300 text-primary focus:ring-primary"
-                        />
-                        <span className="text-sm text-slate-600">Transfer to Office</span>
-                      </label>
-                      
-                      {/* Sales */}
-                      <div className="border-t border-slate-200 pt-2 mt-2">
-                        <button
-                          onClick={() => setExpandedSalesFilter(!expandedSalesFilter)}
-                          className="flex items-center gap-2 w-full text-sm text-slate-600 hover:text-slate-700 font-medium"
-                        >
+                  </div>
+                  <div className="overflow-y-auto flex-1 p-3">
+                    <div className="space-y-3">
+                      <div className="space-y-2">
+                        {/* Heat Treatment */}
+                        <label className="flex items-center gap-2 cursor-pointer">
                           <input
                             type="checkbox"
-                            checked={selectedFilters.some(f => f.startsWith('sales:'))}
-                            onChange={() => {}}
+                            checked={selectedFilters.includes('heat_treatment')}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedFilters([...selectedFilters, 'heat_treatment']);
+                              } else {
+                                setSelectedFilters(selectedFilters.filter(f => f !== 'heat_treatment'));
+                              }
+                            }}
                             className="w-4 h-4 rounded border-slate-300 text-primary focus:ring-primary"
-                            onClick={(e) => e.stopPropagation()}
                           />
-                          <span>Sales</span>
-                          <ChevronDown className={`h-3 w-3 ml-auto transition-transform ${
-                            expandedSalesFilter ? 'rotate-180' : ''
-                          }`} />
-                        </button>
+                          <span className="text-sm text-slate-600">Heat Treatment</span>
+                        </label>
                         
-                        {/* Sales Company Options */}
-                        {expandedSalesFilter && (
-                          <div className="space-y-2 mt-2 ml-6">
-                            {['CEC', 'AGW', 'BRP'].map((company) => (
-                              <label key={company} className="flex items-center gap-2 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  checked={selectedFilters.includes(`sales:${company}`)}
-                                  onChange={(e) => {
-                                    if (e.target.checked) {
-                                      setSelectedFilters([...selectedFilters, `sales:${company}`]);
-                                    } else {
-                                      setSelectedFilters(selectedFilters.filter(f => f !== `sales:${company}`));
-                                    }
-                                  }}
-                                  className="w-4 h-4 rounded border-slate-300 text-primary focus:ring-primary"
-                                />
-                                <span className="text-sm text-slate-600">{company}</span>
-                              </label>
-                            ))}
-                          </div>
-                        )}
+                        {/* Transfer to Factory */}
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={selectedFilters.includes('transfer_factory')}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedFilters([...selectedFilters, 'transfer_factory']);
+                              } else {
+                                setSelectedFilters(selectedFilters.filter(f => f !== 'transfer_factory'));
+                              }
+                            }}
+                            className="w-4 h-4 rounded border-slate-300 text-primary focus:ring-primary"
+                          />
+                          <span className="text-sm text-slate-600">Transfer to Factory</span>
+                        </label>
+                        
+                        {/* Transfer to Office */}
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={selectedFilters.includes('transfer_office')}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedFilters([...selectedFilters, 'transfer_office']);
+                              } else {
+                                setSelectedFilters(selectedFilters.filter(f => f !== 'transfer_office'));
+                              }
+                            }}
+                            className="w-4 h-4 rounded border-slate-300 text-primary focus:ring-primary"
+                          />
+                          <span className="text-sm text-slate-600">Transfer to Office</span>
+                        </label>
+                      
+                        {/* Sales */}
+                        <div className="border-t border-slate-200 pt-2 mt-2">
+                          <button
+                            onClick={() => setExpandedSalesFilter(!expandedSalesFilter)}
+                            className="flex items-center gap-2 w-full text-sm text-slate-600 hover:text-slate-700 font-medium"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={selectedFilters.some(f => f.startsWith('sales:'))}
+                              onChange={() => {}}
+                              className="w-4 h-4 rounded border-slate-300 text-primary focus:ring-primary"
+                              onClick={(e) => e.stopPropagation()}
+                            />
+                            <span>Sales</span>
+                            <ChevronDown className={`h-3 w-3 ml-auto transition-transform ${
+                              expandedSalesFilter ? 'rotate-180' : ''
+                            }`} />
+                          </button>
+                          
+                          {/* Sales Company Options */}
+                          {expandedSalesFilter && (
+                            <div className="space-y-2 mt-2 ml-6">
+                              {['CEC', 'AGW', 'BRP'].map((company) => (
+                                <label key={company} className="flex items-center gap-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedFilters.includes(`sales:${company}`)}
+                                    onChange={(e) => {
+                                      if (e.target.checked) {
+                                        setSelectedFilters([...selectedFilters, `sales:${company}`]);
+                                      } else {
+                                        setSelectedFilters(selectedFilters.filter(f => f !== `sales:${company}`));
+                                      }
+                                    }}
+                                    className="w-4 h-4 rounded border-slate-300 text-primary focus:ring-primary"
+                                  />
+                                  <span className="text-sm text-slate-600">{company}</span>
+                                </label>
+                              ))}
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -1801,10 +1801,23 @@ export default function HistoryPage() {
                                 setEditState({ ...editState, rows });
                               }}
                               placeholder="Select item"
-                              items={selectableItems.map((item) => ({
-                                id: item.id,
-                                label: `${capitalize(item.name)} - ${capitalize(item.category)}`,
-                              }))}
+                              items={selectableItems.map((item) => {
+                                let label = `${capitalize(item.name)} - ${capitalize(item.category)}`;
+                                if (editState.type === "process") {
+                                  // Heat treatment - no source balance shown
+                                  label = `${capitalize(item.name)} - ${capitalize(item.category)}`;
+                                } else if (editState.type === "factory_transfer") {
+                                  // Factory transfer - show HT balance before dash
+                                  label = `${capitalize(item.name)} (HT: ${((item as any).heatTreatmentBalance || 0)}) - ${capitalize(item.category)}`;
+                                } else if (editState.type === "office_transfer") {
+                                  // Office transfer - show FA balance before dash
+                                  label = `${capitalize(item.name)} (FA: ${((item as any).factoryBalance || 0)}) - ${capitalize(item.category)}`;
+                                } else if (editState.type === "sales") {
+                                  // Sales - show OF balance before dash
+                                  label = `${capitalize(item.name)} (OF: ${((item as any).officeBalance || 0)}) - ${capitalize(item.category)}`;
+                                }
+                                return { id: item.id, label };
+                              })}
                             />
                           </div>
 

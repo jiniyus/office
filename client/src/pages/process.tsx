@@ -1174,7 +1174,7 @@ export default function ProcessPage() {
                             placeholder="Select item"
                             items={sortItems(items.filter(item => ((item as any).heatTreatmentBalance || 0) > 0)).map((item) => ({
                               id: item.id,
-                              label: `${capitalize(item.name)} - ${capitalize(item.category)} (HT: ${((item as any).heatTreatmentBalance || 0)})`,
+                              label: `${capitalize(item.name)} (HT: ${((item as any).heatTreatmentBalance || 0)}) - ${capitalize(item.category)}`,
                             }))}
                           />
                         </div>
@@ -1331,7 +1331,7 @@ export default function ProcessPage() {
                             placeholder="Select item"
                             items={sortItems(items.filter(item => ((item as any).factoryBalance || 0) > 0)).map((item) => ({
                               id: item.id,
-                              label: `${capitalize(item.name)} - ${capitalize(item.category)} (FA: ${((item as any).factoryBalance || 0)})`,
+                              label: `${capitalize(item.name)} (FA: ${((item as any).factoryBalance || 0)}) - ${capitalize(item.category)}`,
                             }))}
                           />
                         </div>

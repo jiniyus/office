@@ -702,10 +702,10 @@ export default function Stock() {
                     )}
                   </Button>
                 </PopoverTrigger>
-                <PopoverContent className="w-56 p-3" align="start">
-                  <div className="space-y-4">
-                    {/* Name Filter */}
-                    <div>
+                <PopoverContent className="w-56 p-0" align="start">
+                  <div className="flex flex-col h-96 overflow-y-auto">
+                    {/* Name Filter - With its own scroll */}
+                    <div className="px-3 py-2 border-b border-slate-100 flex-shrink-0">
                       <div className="flex items-center justify-between mb-2">
                         <h3 className="text-sm font-semibold text-slate-700">Name</h3>
                         {selectedNames.length > 0 && (
@@ -719,7 +719,7 @@ export default function Stock() {
                           </Button>
                         )}
                       </div>
-                      <div className="space-y-2 max-h-40 overflow-y-auto">
+                      <div className="space-y-2 max-h-48 overflow-y-auto">
                         {Array.from(new Set(items.map(item => item.name)))
                           .sort((a, b) => naturalCompare(a, b))
                           .map((name) => (
@@ -743,7 +743,7 @@ export default function Stock() {
                     </div>
 
                     {/* Category Filter */}
-                    <div>
+                    <div className="px-3 py-2 border-b border-slate-100 flex-shrink-0">
                       <div className="flex items-center justify-between mb-2">
                         <h3 className="text-sm font-semibold text-slate-700">Category</h3>
                         {selectedCategories.length > 0 && (
@@ -779,7 +779,7 @@ export default function Stock() {
                     </div>
 
                     {/* Location Balance Filter */}
-                    <div className="border-t border-slate-200 pt-3">
+                    <div className="px-3 py-2 flex-shrink-0">
                       <div className="flex items-center justify-between mb-2">
                         <h3 className="text-sm font-semibold text-slate-700">Location Balance</h3>
                         {filterByLocationBalance && (
@@ -1414,7 +1414,7 @@ export default function Stock() {
                             placeholder="Select item"
                             items={sortItems(items.filter(item => ((item as any).officeBalance || 0) > 0)).map((item) => ({
                               id: item.id,
-                              label: `${capitalize(item.name)} - OF: ${((item as any).officeBalance || 0)} units`,
+                              label: `${capitalize(item.name)} (OF: ${((item as any).officeBalance || 0)}) - ${capitalize((item as any).category || '')}`,
                             }))}
                           />
                         </div>

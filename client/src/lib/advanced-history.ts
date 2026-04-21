@@ -404,13 +404,15 @@ export async function recalculateAdvancedState(company?: string) {
     });
   }
 
-  for (const txId of txDeletes) {
-    await deleteDoc(doc(db, "transactions", txId));
-  }
+  // Batch delete transactions in parallel
+  await Promise.all(
+    txDeletes.map((txId) => deleteDoc(doc(db, "transactions", txId)))
+  );
 
-  for (const update of txUpdates) {
-    await updateDoc(doc(db, "transactions", update.id), update.data);
-  }
+  // Batch update transactions in parallel
+  await Promise.all(
+    txUpdates.map((update) => updateDoc(doc(db, "transactions", update.id), update.data))
+  );
 
   const stockByKey = new Map(context.stockItems.map((item) => [toItemKey(item.name, item.category), item]));
   for (const item of context.stockItems) {
@@ -435,10 +437,20 @@ export async function recalculateAdvancedState(company?: string) {
     });
   }
 
-  const refreshedContext = await loadAdvancedContext(company);
-  const refreshedAdvancedTxs = refreshedContext.transactions
-    .filter((tx) => tx.type === "heat_treatment_created" || tx.type === "factory_transfer_created")
-    .sort(compareAdvancedTransactions);
+  // Optimize: Filter deleted txs from context instead of reloading
+  const remainingAdvancedTxs = advancedTxs.filter(tx => !txDeletes.includes(tx.id));
+  
+  // Only rebuild process documents if there are heat treatment transactions
+  const htTxs = remainingAdvancedTxs.filter((tx) => tx.type === "heat_treatment_created");
+  const factoryTxs = remainingAdvancedTxs.filter((tx) => tx.type === "factory_transfer_created");
+  
+  if (htTxs.length === 0 && factoryTxs.length === 0) {
+    // Delete all process documents if no HT or FA transactions remain
+    for (const processDoc of context.processDocs) {
+      await deleteDoc(doc(db, "processes", processDoc.id));
+    }
+    return;
+  }
 
   const htGroups = new Map<
     string,
@@ -451,8 +463,8 @@ export async function recalculateAdvancedState(company?: string) {
     }
   >();
 
-  for (const tx of refreshedAdvancedTxs) {
-    if (tx.type !== "heat_treatment_created" || !tx.processId) continue;
+  for (const tx of htTxs) {
+    if (!tx.processId) continue;
     const group = htGroups.get(tx.processId) || {
       serialNumber: tx.processSerialNumber || tx.processId,
       date: tx.businessDate || tx.timestamp,
@@ -462,7 +474,7 @@ export async function recalculateAdvancedState(company?: string) {
     };
 
     group.items.push({
-      itemId: refreshedContext.stockItems.find(
+      itemId: context.stockItems.find(
         (item) => toItemKey(item.name, item.category) === toItemKey(tx.itemId, tx.category)
       )?.id || "",
       itemName: tx.itemId,
@@ -493,7 +505,6 @@ export async function recalculateAdvancedState(company?: string) {
     }
   }
 
-  const factoryTxs = refreshedAdvancedTxs.filter((tx) => tx.type === "factory_transfer_created");
   for (const tx of factoryTxs) {
     const key = toItemKey(tx.itemId, tx.category);
     const pool = fifoPools.get(key) || [];
@@ -526,7 +537,7 @@ export async function recalculateAdvancedState(company?: string) {
     remainingByProcess.set(processId, items);
   }
 
-  const existingProcessIds = new Set(refreshedContext.processDocs.map((processDoc) => processDoc.id));
+  const existingProcessIds = new Set(context.processDocs.map((processDoc) => processDoc.id));
   for (const [processId, group] of sortedHtGroups) {
     const remainingItems = remainingByProcess.get(processId) || [];
     if (remainingItems.length === 0) {
