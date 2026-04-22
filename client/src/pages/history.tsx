@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ArrowUpRight, ArrowDownLeft, Search, Trash2, Calendar, ChevronDown, ChevronRight, Filter, Pencil } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { useTransactions, useLocations, useStockItems } from "@/lib/firestore-hooks";
 import { useState, useMemo } from "react";
 import { Spinner } from "@/components/ui/spinner";
@@ -41,7 +42,7 @@ import { db } from "@/lib/firebase";
 import { collection, query, where, getDocs, deleteDoc, doc, Timestamp, updateDoc, getDoc } from "firebase/firestore";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
-import { reverseAdvancedGroup, saveAdvancedGroupEdit } from "@/lib/advanced-history";
+import { reverseAdvancedGroup, saveAdvancedGroupEdit, findMirrorFollowUps, recalculateAdvancedStateOptimized } from "@/lib/advanced-history";
 
 interface HistoryProcessItem {
   itemId: string;
@@ -82,6 +83,7 @@ interface EditHistoryState {
   salesCompany: "CEC" | "AGW" | "BRP" | "";
   remarks: string;
   processSerialNumber: string;
+  editFollowups?: boolean;
 }
 
 export default function HistoryPage() {
@@ -99,6 +101,8 @@ export default function HistoryPage() {
   const [isEditSubmitting, setIsEditSubmitting] = useState(false);
   const [selectedFilters, setSelectedFilters] = useState<string[]>([]);
   const [expandedSalesFilter, setExpandedSalesFilter] = useState(false);
+  const [nonMatchingMirrorsDialog, setNonMatchingMirrorsDialog] = useState<{ show: boolean; proceed: (() => void) | null } | null>(null);
+  const [noFollowUpsDialog, setNoFollowUpsDialog] = useState<boolean>(false);
   const { toast } = useToast();
 
   const getItemKey = (itemName: string, category: string) =>
@@ -414,20 +418,41 @@ export default function HistoryPage() {
 
     try {
       setIsEditSubmitting(true);
-      await saveAdvancedGroupEdit({
-        company: user?.company,
-        type: editState.type,
-        groupId: editState.groupId,
-        rows: validRows.map((row) => ({
-          stockItemId: row.id,
-          quantity: parseInt(row.quantity, 10),
-        })),
-        businessDate: new Date(editState.businessDate),
-        salesCompany: editState.type === "sales" ? editState.salesCompany : undefined,
-        notes: editState.type === "sales" ? editState.remarks.trim() : undefined,
-        processSerialNumber: editState.type === "process" ? editState.processSerialNumber.trim() : undefined,
-        user: { id: user?.uid || "", name: user?.displayName || "Unknown" },
-      });
+
+      // Check for follow-up transactions if editing heat treatment and editFollowups is enabled
+      if (editState.type === "process" && editState.editFollowups) {
+        const mirrors = await findMirrorFollowUps(editState.groupId, user?.company);
+
+        if (mirrors.length === 0) {
+          // Bug fix: No follow-ups found, show dialog asking user to disable toggle
+          setNoFollowUpsDialog(true);
+          setIsEditSubmitting(false);
+          return;
+        }
+
+        const allValid = mirrors.every((m) => m.isValid);
+
+        if (!allValid) {
+          // Show dialog for non-matching mirrors
+          const handleProceedOnlyThis = async () => {
+            setNonMatchingMirrorsDialog(null);
+            await performEdit(validRows, true); // Only this one, skip recalc optimization
+          };
+
+          setNonMatchingMirrorsDialog({
+            show: true,
+            proceed: handleProceedOnlyThis,
+          });
+          setIsEditSubmitting(false);
+          return;
+        }
+
+        // All mirrors are valid, proceed with follow-up editing
+        await performEdit(validRows, false); // Edit with follow-ups
+      } else {
+        // Not heat treatment or editFollowups not enabled, regular edit
+        await performEdit(validRows, true);
+      }
 
       toast({
         title: "Success",
@@ -445,6 +470,105 @@ export default function HistoryPage() {
     } finally {
       setIsEditSubmitting(false);
     }
+  };
+
+  const performEdit = async (
+    validRows: EditHistoryRow[],
+    skipFollowUpRecalc: boolean
+  ) => {
+    if (!editState) return;
+
+    const newQtys = new Map(
+      validRows.map((row) => {
+        const item = items.find((i) => i.id === row.id);
+        return [item ? `${item.name.toLowerCase()}::${item.category.toLowerCase()}` : "", parseInt(row.quantity, 10)];
+      })
+    );
+
+    // Get current transactions to calculate quantity changes
+    const currentTxs = transactions.filter(
+      editState.type === "process"
+        ? (tx) => tx.processId === editState.groupId
+        : editState.type === "sales"
+        ? (tx) => tx.salesId === editState.groupId
+        : (tx) => tx.transferId === editState.groupId && tx.type === (editState.type === "factory_transfer" ? "factory_transfer_created" : "office_transfer_created")
+    );
+
+    const currentQtys = new Map<string, number>();
+    for (const tx of currentTxs) {
+      const key = `${tx.itemId.toLowerCase()}::${tx.category.toLowerCase()}`;
+      const current = currentQtys.get(key) || 0;
+      currentQtys.set(key, current + Math.abs(tx.quantityChange || 0));
+    }
+
+    // Calculate changes for each item
+    const changedItems = new Map<string, { oldQty: number; newQty: number; change: number }>();
+    for (const [key, newQty] of newQtys.entries()) {
+      const oldQty = currentQtys.get(key) || 0;
+      if (oldQty !== newQty) {
+        changedItems.set(key, {
+          oldQty,
+          newQty,
+          change: newQty - oldQty,
+        });
+      }
+    }
+
+    // If editFollowups is enabled and this is a heat treatment, update follow-ups
+    if (editState.type === "process" && editState.editFollowups && changedItems.size > 0) {
+      const mirrors = await findMirrorFollowUps(editState.groupId, user?.company);
+      const validMirrors = mirrors.filter((m) => m.isValid);
+
+      if (validMirrors.length > 0) {
+        // Update follow-up transactions
+        const now = Timestamp.now();
+        const updatePromises: Promise<void>[] = [];
+
+        for (const mirror of validMirrors) {
+          for (const tx of mirror.transactions) {
+            const key = `${tx.itemId.toLowerCase()}::${tx.category.toLowerCase()}`;
+            const change = changedItems.get(key)?.change || 0;
+
+            if (change !== 0) {
+              const newQty = Math.max(0, (tx.quantityChange || 0) + change);
+              if (newQty > 0) {
+                updatePromises.push(
+                  updateDoc(doc(db, "transactions", tx.id), {
+                    quantityChange: newQty,
+                    edited: true,
+                    editedAt: now,
+                  })
+                );
+              } else {
+                // Delete if quantity becomes 0
+                updatePromises.push(deleteDoc(doc(db, "transactions", tx.id)));
+              }
+            }
+          }
+        }
+
+        if (updatePromises.length > 0) {
+          await Promise.all(updatePromises);
+        }
+      }
+    }
+
+    // Perform main edit
+    await saveAdvancedGroupEdit({
+      company: user?.company,
+      type: editState.type,
+      groupId: editState.groupId,
+      rows: validRows.map((row) => ({
+        stockItemId: row.id,
+        quantity: parseInt(row.quantity, 10),
+      })),
+      businessDate: new Date(editState.businessDate),
+      salesCompany: editState.type === "sales" ? editState.salesCompany : undefined,
+      notes: editState.type === "sales" ? editState.remarks.trim() : undefined,
+      processSerialNumber: editState.type === "process" ? editState.processSerialNumber.trim() : undefined,
+      user: { id: user?.uid || "", name: user?.displayName || "Unknown" },
+      editFollowups: editState.editFollowups,
+    });
   };
 
   const executeDelete = async (deleteOption: 'delete' | 'reverse') => {
@@ -1745,6 +1869,23 @@ export default function HistoryPage() {
                   </div>
                 )}
 
+                {editState.type === "process" && (
+                  <div className="flex items-center justify-between p-3 rounded-lg border border-slate-200 bg-blue-50">
+                    <div>
+                      <Label className="text-sm font-medium text-slate-700">Update Follow-up Transactions</Label>
+                      <p className="text-xs text-slate-600 mt-1">
+                        When enabled, changes will automatically apply to matching factory transfer and office transfer transactions
+                      </p>
+                    </div>
+                    <Switch
+                      checked={editState.editFollowups || false}
+                      onCheckedChange={(checked) =>
+                        setEditState({ ...editState, editFollowups: checked })
+                      }
+                    />
+                  </div>
+                )}
+
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
                     <Label className="text-sm font-medium text-slate-700">Items</Label>
@@ -1904,6 +2045,108 @@ export default function HistoryPage() {
               </Button>
               <Button onClick={handleEditConfirm} disabled={isEditSubmitting}>
                 {isEditSubmitting ? "Saving..." : "Confirm Edit"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Non-Matching Follow-Up Mirrors Dialog */}
+        <Dialog
+          open={nonMatchingMirrorsDialog?.show || false}
+          onOpenChange={(open) => {
+            if (!open) {
+              setNonMatchingMirrorsDialog(null);
+            }
+          }}
+        >
+          <DialogContent className="sm:max-w-[500px]">
+            <DialogHeader>
+              <DialogTitle>Follow-up Transactions Don't Match</DialogTitle>
+              <DialogDescription>
+                The follow-up transactions (Factory Transfer / Office Transfer) are not identical to this Heat Treatment transaction.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div className="p-3 bg-yellow-50 rounded border border-yellow-200">
+                <p className="text-sm text-yellow-800">
+                  <strong>What does this mean?</strong> When you enabled "Update Follow-up Transactions," we looked for factory transfer or office transfer transactions that have the same items and quantities as this heat treatment. However, the follow-up transactions don't match exactly, so we can't safely update them.
+                </p>
+              </div>
+              <p className="text-sm text-slate-700">
+                Would you like to:
+              </p>
+            </div>
+            <DialogFooter className="gap-2">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setNonMatchingMirrorsDialog(null);
+                  setEditState(null);
+                  setEditPassword("");
+                }}
+              >
+                Cancel Edit
+              </Button>
+              <Button
+                onClick={() => {
+                  nonMatchingMirrorsDialog?.proceed?.();
+                }}
+                className="bg-blue-600 hover:bg-blue-700"
+              >
+                Edit Only This Transaction
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* No Follow-ups Found Dialog */}
+        <Dialog open={noFollowUpsDialog} onOpenChange={setNoFollowUpsDialog}>
+          <DialogContent className="sm:max-w-[500px]">
+            <DialogHeader>
+              <DialogTitle>No Follow-up Transactions Found</DialogTitle>
+              <DialogDescription>
+                "Update Follow-up Transactions" is enabled, but no matching follow-ups exist.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div className="p-3 bg-red-50 rounded border border-red-200">
+                <p className="text-sm text-red-800">
+                  <strong>What does this mean?</strong> You enabled "Update Follow-up Transactions," but we couldn't find any factory transfer or office transfer transactions created after this heat treatment. To proceed, you must turn off the toggle.
+                </p>
+              </div>
+              <p className="text-sm text-slate-700">
+                Your options:
+              </p>
+              <ul className="text-sm text-slate-700 list-disc list-inside space-y-1">
+                <li>Turn off the "Update Follow-up Transactions" toggle and try editing again</li>
+                <li>Cancel this edit if you expected follow-up transactions to exist</li>
+              </ul>
+            </div>
+            <DialogFooter className="gap-2">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setNoFollowUpsDialog(false);
+                  setEditState(null);
+                  setEditPassword("");
+                }}
+              >
+                Cancel Edit
+              </Button>
+              <Button
+                onClick={() => {
+                  setNoFollowUpsDialog(false);
+                  // Toggle off the editFollowups flag
+                  if (editState) {
+                    setEditState({
+                      ...editState,
+                      editFollowups: false,
+                    });
+                  }
+                }}
+                className="bg-amber-600 hover:bg-amber-700"
+              >
+                Turn Off Toggle
               </Button>
             </DialogFooter>
           </DialogContent>

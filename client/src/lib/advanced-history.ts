@@ -57,6 +57,14 @@ interface EditableGroupInput {
   salesCompany?: string;
   notes?: string;
   processSerialNumber?: string;
+  editFollowups?: boolean;
+}
+
+interface MirrorFollowUp {
+  transferType: "factory_transfer" | "office_transfer";
+  transferId: string;
+  transactions: Transaction[];
+  isValid: boolean;
 }
 
 interface AdvancedContext {
@@ -206,6 +214,169 @@ const toGroupType = (type: EditableGroupType): AdvancedTransactionType => {
   return "sales";
 };
 
+// Find the original transaction quantities before edit for comparison
+const getOriginalTransactionsByItemKey = (txs: Transaction[]): Map<string, number> => {
+  const map = new Map<string, number>();
+  for (const tx of txs) {
+    const key = toItemKey(tx.itemId, tx.category);
+    const current = map.get(key) || 0;
+    map.set(key, current + Math.abs(tx.quantityChange || 0));
+  }
+  return map;
+};
+
+// Check if two transaction groups have identical items and quantities
+const areTransactionsMirrors = (srcTxs: Transaction[], targetTxs: Transaction[]): boolean => {
+  const srcMap = getOriginalTransactionsByItemKey(srcTxs);
+  const targetMap = getOriginalTransactionsByItemKey(targetTxs);
+
+  if (srcMap.size !== targetMap.size) return false;
+
+  for (const [key, qty] of srcMap.entries()) {
+    if ((targetMap.get(key) || 0) !== qty) return false;
+  }
+
+  return true;
+};
+
+// Find mirror follow-up transactions for a heat treatment
+export async function findMirrorFollowUps(
+  htProcessId: string,
+  company?: string
+): Promise<MirrorFollowUp[]> {
+  // Optimization: Load only heat treatment transactions and transfers, not all transactions
+  const [htSnapshot, stockSnapshot, processSnapshot] = await Promise.all([
+    getDocs(
+      company
+        ? query(
+            collection(db, "transactions"),
+            where("company", "==", company),
+            where("processId", "==", htProcessId)
+          )
+        : query(
+            collection(db, "transactions"),
+            where("processId", "==", htProcessId)
+          )
+    ),
+    getDocs(
+      company
+        ? query(collection(db, "stock-items"), where("company", "==", company))
+        : query(collection(db, "stock-items"))
+    ),
+    getDocs(query(collection(db, "processes"), where("processType", "==", "heat_treatment"))),
+  ]);
+
+  const htTxs = htSnapshot.docs.map(mapTransactionDoc);
+  if (htTxs.length === 0) return [];
+
+  // Get the process timestamp for time window check
+  const htTimestamp = htTxs[0].businessDate || htTxs[0].timestamp;
+  const oneDayMs = 24 * 60 * 60 * 1000;
+  const timeThreshold = htTimestamp.getTime() + oneDayMs;
+
+  // Load only factory and office transfers (performance optimization)
+  const [factorySnapshot, officeSnapshot] = await Promise.all([
+    getDocs(
+      company
+        ? query(
+            collection(db, "transactions"),
+            where("company", "==", company),
+            where("type", "==", "factory_transfer_created")
+          )
+        : query(
+            collection(db, "transactions"),
+            where("type", "==", "factory_transfer_created")
+          )
+    ),
+    getDocs(
+      company
+        ? query(
+            collection(db, "transactions"),
+            where("company", "==", company),
+            where("type", "==", "office_transfer_created")
+          )
+        : query(
+            collection(db, "transactions"),
+            where("type", "==", "office_transfer_created")
+          )
+    ),
+  ]);
+
+  const factoryTransfers = factorySnapshot.docs.map(mapTransactionDoc);
+  const officeTransfers = officeSnapshot.docs.map(mapTransactionDoc);
+
+  // Early exit: filter by time window to minimize processing
+  const validFactoryTransfers = factoryTransfers.filter(
+    (tx) => tx.timestamp.getTime() > htTimestamp.getTime() &&
+    tx.timestamp.getTime() <= timeThreshold
+  );
+
+  const validOfficeTransfers = officeTransfers.filter(
+    (tx) => tx.timestamp.getTime() > htTimestamp.getTime() &&
+    tx.timestamp.getTime() <= timeThreshold
+  );
+
+  // Early exit if no transfers in time window
+  if (validFactoryTransfers.length === 0 && validOfficeTransfers.length === 0) {
+    return [];
+  }
+
+  const mirrors: MirrorFollowUp[] = [];
+
+  // Group transfers by ID
+  const factoryById = new Map<string, Transaction[]>();
+  const officeById = new Map<string, Transaction[]>();
+
+  for (const tx of validFactoryTransfers) {
+    if (!tx.transferId) continue;
+    if (!factoryById.has(tx.transferId)) factoryById.set(tx.transferId, []);
+    factoryById.get(tx.transferId)!.push(tx);
+  }
+
+  for (const tx of validOfficeTransfers) {
+    if (!tx.transferId) continue;
+    if (!officeById.has(tx.transferId)) officeById.set(tx.transferId, []);
+    officeById.get(tx.transferId)!.push(tx);
+  }
+
+  // Check factory transfers for mirrors
+  for (const [transferId, txs] of factoryById.entries()) {
+    const isValid = areTransactionsMirrors(htTxs, txs);
+    // Only include if valid (matches HT items) to filter out transfers from other HTs
+    if (isValid) {
+      mirrors.push({
+        transferType: "factory_transfer",
+        transferId,
+        transactions: txs,
+        isValid: true,
+      });
+    }
+  }
+
+  // Check office transfers for mirrors
+  for (const [transferId, txs] of officeById.entries()) {
+    const isValid = areTransactionsMirrors(htTxs, txs);
+    // Only include if valid (matches HT items) to filter out transfers from other HTs
+    if (isValid) {
+      mirrors.push({
+        transferType: "office_transfer",
+        transferId,
+        transactions: txs,
+        isValid: true,
+      });
+    }
+  }
+
+  // Sort by timestamp (nearest first)
+  mirrors.sort((a, b) => {
+    const aTime = Math.min(...a.transactions.map((tx) => tx.timestamp.getTime()));
+    const bTime = Math.min(...b.transactions.map((tx) => tx.timestamp.getTime()));
+    return aTime - bTime;
+  });
+
+  return mirrors;
+}
+
 export async function saveAdvancedGroupEdit(input: EditableGroupInput) {
   const context = await loadAdvancedContext(input.company);
   const stockById = new Map(context.stockItems.map((item) => [item.id, item]));
@@ -326,7 +497,247 @@ export async function reverseAdvancedGroup(groupType: EditableGroupType, groupId
 
   await recalculateAdvancedState(company);
 }
+// Optimized: Recalculate only affected items to improve performance
+export async function recalculateAdvancedStateOptimized(
+  company?: string,
+  affectedItemKeys?: Set<string>
+) {
+  const context = await loadAdvancedContext(company);
+  const advancedTxs = context.transactions
+    .filter((tx) => ADVANCED_TYPES.includes(tx.type as AdvancedTransactionType))
+    .sort(compareAdvancedTransactions);
 
+  // If specific items are affected, only recalculate those
+  const itemsToCheck = affectedItemKeys || new Set<string>();
+  const shouldFullRecalc = itemsToCheck.size === 0;
+
+  const txUpdates: Array<{ id: string; data: Record<string, any> }> = [];
+  const txDeletes: string[] = [];
+  const balancesByKey = new Map<string, { ht: number; fa: number; of: number }>();
+  const touchedItemKeys = new Set<string>();
+
+  for (const tx of advancedTxs) {
+    const itemKey = toItemKey(tx.itemId, tx.category);
+
+    // Skip if not affected and we're doing optimized calc
+    if (!shouldFullRecalc && !itemsToCheck.has(itemKey)) {
+      continue;
+    }
+
+    touchedItemKeys.add(itemKey);
+
+    const current = balancesByKey.get(itemKey) || { ht: 0, fa: 0, of: 0 };
+    const requestedQty = Math.max(0, Math.abs(tx.quantityChange || 0));
+    let appliedQty = requestedQty;
+
+    if (tx.type === "factory_transfer_created") {
+      appliedQty = Math.min(requestedQty, current.ht);
+    } else if (tx.type === "office_transfer_created") {
+      appliedQty = Math.min(requestedQty, current.fa);
+    } else if (tx.type === "sales") {
+      appliedQty = Math.min(requestedQty, current.of);
+    }
+
+    if (appliedQty <= 0) {
+      txDeletes.push(tx.id);
+      continue;
+    }
+
+    const before = { ...current };
+    if (tx.type === "heat_treatment_created") {
+      current.ht += appliedQty;
+    } else if (tx.type === "factory_transfer_created") {
+      current.ht -= appliedQty;
+      current.fa += appliedQty;
+    } else if (tx.type === "office_transfer_created") {
+      current.fa -= appliedQty;
+      current.of += appliedQty;
+    } else if (tx.type === "sales") {
+      current.of -= appliedQty;
+    }
+
+    balancesByKey.set(itemKey, current);
+
+    txUpdates.push({
+      id: tx.id,
+      data: {
+        quantityChange: tx.type === "sales" ? -appliedQty : appliedQty,
+        previousBalance:
+          tx.type === "heat_treatment_created"
+            ? before.ht
+            : tx.type === "factory_transfer_created"
+            ? before.ht
+            : tx.type === "office_transfer_created"
+            ? before.fa
+            : before.of,
+        balance:
+          tx.type === "heat_treatment_created"
+            ? current.ht
+            : tx.type === "factory_transfer_created"
+            ? current.ht
+            : tx.type === "office_transfer_created"
+            ? current.fa
+            : current.of,
+        previousHTBalance: before.ht,
+        previousFABalance: before.fa,
+        previousOFBalance: before.of,
+        newHTBalance: current.ht,
+        newFABalance: current.fa,
+        newOFBalance: current.of,
+      },
+    });
+  }
+
+  // Batch delete transactions in parallel
+  await Promise.all(txDeletes.map((txId) => deleteDoc(doc(db, "transactions", txId))));
+
+  // Batch update transactions in parallel
+  await Promise.all(
+    txUpdates.map((update) => updateDoc(doc(db, "transactions", update.id), update.data))
+  );
+
+  // Update only affected stock items
+  const stockByKey = new Map(
+    context.stockItems.map((item) => [toItemKey(item.name, item.category), item])
+  );
+
+  for (const itemKey of Array.from(touchedItemKeys)) {
+    const stockItem = stockByKey.get(itemKey);
+    if (!stockItem) continue;
+
+    const next = balancesByKey.get(itemKey) || { ht: 0, fa: 0, of: 0 };
+    await updateDoc(doc(db, "stock-items", stockItem.id), {
+      heatTreatmentBalance: next.ht,
+      factoryBalance: next.fa,
+      officeBalance: next.of,
+      quantity: next.ht + next.fa + next.of,
+      lastUpdated: Timestamp.now(),
+    });
+  }
+
+  // Only rebuild if doing full recalc
+  if (!shouldFullRecalc) {
+    return;
+  }
+
+  // Full recalc: rebuild process documents
+  const remainingAdvancedTxs = advancedTxs.filter((tx) => !txDeletes.includes(tx.id));
+  const htTxs = remainingAdvancedTxs.filter((tx) => tx.type === "heat_treatment_created");
+  const factoryTxs = remainingAdvancedTxs.filter((tx) => tx.type === "factory_transfer_created");
+
+  if (htTxs.length === 0 && factoryTxs.length === 0) {
+    for (const processDoc of context.processDocs) {
+      await deleteDoc(doc(db, "processes", processDoc.id));
+    }
+    return;
+  }
+
+  const htGroups = new Map<
+    string,
+    {
+      serialNumber: string;
+      date: Date;
+      createdAt: Date;
+      createdBy: { id: string; name: string };
+      items: Array<{ itemId: string; itemName: string; category: string; quantity: number }>;
+    }
+  >();
+
+  for (const tx of htTxs) {
+    if (!tx.processId) continue;
+    const group = htGroups.get(tx.processId) || {
+      serialNumber: tx.processSerialNumber || tx.processId,
+      date: tx.businessDate || tx.timestamp,
+      createdAt: tx.timestamp,
+      createdBy: tx.user,
+      items: [],
+    };
+
+    group.items.push({
+      itemId: context.stockItems.find(
+        (item) => toItemKey(item.name, item.category) === toItemKey(tx.itemId, tx.category)
+      )?.id || "",
+      itemName: tx.itemId,
+      category: tx.category,
+      quantity: Math.max(0, tx.quantityChange),
+    });
+    htGroups.set(tx.processId, group);
+  }
+
+  const sortedHtGroups = Array.from(htGroups.entries()).sort((a, b) => {
+    const aTime = a[1].date.getTime();
+    const bTime = b[1].date.getTime();
+    if (aTime !== bTime) return aTime - bTime;
+    return a[1].createdAt.getTime() - b[1].createdAt.getTime();
+  });
+
+  const fifoPools = new Map<string, Array<{ processId: string; remaining: number }>>();
+
+  for (const [processId, group] of sortedHtGroups) {
+    for (const item of group.items) {
+      const key = toItemKey(item.itemName, item.category);
+      const pool = fifoPools.get(key) || [];
+      pool.push({ processId, remaining: item.quantity });
+      fifoPools.set(key, pool);
+    }
+  }
+
+  for (const tx of factoryTxs) {
+    const key = toItemKey(tx.itemId, tx.category);
+    const pool = fifoPools.get(key) || [];
+    let toDeduct = Math.max(0, tx.quantityChange);
+
+    for (const entry of pool) {
+      if (toDeduct <= 0) break;
+      const deducted = Math.min(entry.remaining, toDeduct);
+      entry.remaining -= deducted;
+      toDeduct -= deducted;
+    }
+  }
+
+  const remainingByProcess = new Map<
+    string,
+    Array<{ itemId: string; itemName: string; category: string; quantity: number }>
+  >();
+
+  for (const [processId, group] of sortedHtGroups) {
+    const items: Array<{ itemId: string; itemName: string; category: string; quantity: number }> = [];
+    for (const item of group.items) {
+      const key = toItemKey(item.itemName, item.category);
+      const pool = fifoPools.get(key) || [];
+      const remainingEntry = pool.find((entry) => entry.processId === processId);
+      const remaining = remainingEntry?.remaining || 0;
+      if (remaining > 0) {
+        items.push({ ...item, quantity: remaining });
+      }
+    }
+    remainingByProcess.set(processId, items);
+  }
+
+  const existingProcessIds = new Set(context.processDocs.map((processDoc) => processDoc.id));
+  for (const [processId, group] of sortedHtGroups) {
+    const remainingItems = remainingByProcess.get(processId) || [];
+    if (remainingItems.length === 0) {
+      if (existingProcessIds.has(processId)) {
+        await deleteDoc(doc(db, "processes", processId));
+      }
+      continue;
+    }
+
+    await setDoc(
+      doc(db, "processes", processId),
+      {
+        serialNumber: group.serialNumber,
+        date: Timestamp.fromDate(group.date),
+        processType: "heat_treatment",
+        items: remainingItems,
+        createdAt: Timestamp.fromDate(group.createdAt),
+        createdBy: group.createdBy,
+      },
+      { merge: true }
+    );
+  }
+}
 export async function recalculateAdvancedState(company?: string) {
   const context = await loadAdvancedContext(company);
   const advancedTxs = context.transactions
