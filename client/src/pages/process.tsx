@@ -98,6 +98,8 @@ export default function ProcessPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [expandedRowIndex, setExpandedRowIndex] = useState<number | null>(null);
   const [serialCounter, setSerialCounter] = useState(1);
+  const [deleteConfirmProcessId, setDeleteConfirmProcessId] = useState<string | null>(null);
+  const [deleteProcessPassword, setDeleteProcessPassword] = useState("");
 
   const { items, loading } = useStockItems();
   const { user } = useAuth();
@@ -342,11 +344,12 @@ export default function ProcessPage() {
       if (!processToDelete) return;
 
       if (processToDelete.processType === "heat_treatment") {
-        const password = window.prompt("Enter the 4-digit password to delete and revert this heat treatment entry:");
-        if (password === null) {
+        if (deleteConfirmProcessId !== processId) {
+          setDeleteConfirmProcessId(processId);
+          setDeleteProcessPassword("");
           return;
         }
-        if (password !== PROCESS_DELETE_PASSWORD) {
+        if (deleteProcessPassword !== PROCESS_DELETE_PASSWORD) {
           toast({
             variant: "destructive",
             title: "Incorrect password",
@@ -439,6 +442,8 @@ export default function ProcessPage() {
         }
 
         setProcesses(processes.filter(p => p.id !== processId));
+        setDeleteConfirmProcessId(null);
+        setDeleteProcessPassword("");
         toast({
           title: "Success",
           description: "Process deleted and history reversed",
@@ -485,6 +490,8 @@ export default function ProcessPage() {
       const processTxSnapshot = await getDocs(query(collection(db, "transactions"), where("processId", "==", processId)));
       await Promise.all(processTxSnapshot.docs.map((txDoc) => deleteDoc(doc(db, "transactions", txDoc.id))));
       setProcesses(processes.filter(p => p.id !== processId));
+      setDeleteConfirmProcessId(null);
+      setDeleteProcessPassword("");
       toast({
         title: "Success",
         description: "Process deleted and changes reverted",
@@ -885,6 +892,63 @@ export default function ProcessPage() {
             ))}
           </div>
         )}
+
+        <Dialog
+          open={deleteConfirmProcessId !== null}
+          onOpenChange={(open) => {
+            if (!open) {
+              setDeleteConfirmProcessId(null);
+              setDeleteProcessPassword("");
+            }
+          }}
+        >
+          <DialogContent className="sm:max-w-[420px]">
+            <DialogHeader>
+              <DialogTitle>Delete Heat Treatment</DialogTitle>
+              <DialogDescription>
+                Enter the 4-digit code to delete and reverse this heat treatment entry.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-3 py-2">
+              <Label htmlFor="process-delete-code">4-digit code</Label>
+              <Input
+                id="process-delete-code"
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                name="process-delete-code"
+                data-form-type="other"
+                data-lpignore="true"
+                spellCheck={false}
+                maxLength={4}
+                placeholder="Enter code"
+                value={deleteProcessPassword}
+                onChange={(e) => setDeleteProcessPassword(e.target.value.replace(/\D/g, "").slice(0, 4))}
+              />
+            </div>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setDeleteConfirmProcessId(null);
+                  setDeleteProcessPassword("");
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={() => {
+                  if (deleteConfirmProcessId) {
+                    handleDeleteProcess(deleteConfirmProcessId);
+                  }
+                }}
+              >
+                Delete And Reverse
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
 
       {/* Process Modal */}

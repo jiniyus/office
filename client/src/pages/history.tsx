@@ -103,6 +103,8 @@ export default function HistoryPage() {
   const [expandedSalesFilter, setExpandedSalesFilter] = useState(false);
   const [nonMatchingMirrorsDialog, setNonMatchingMirrorsDialog] = useState<{ show: boolean; proceed: (() => void) | null } | null>(null);
   const [noFollowUpsDialog, setNoFollowUpsDialog] = useState<boolean>(false);
+  const [deleteHistoryRange, setDeleteHistoryRange] = useState<'lastMonth' | 'lastQuarter' | 'lastYear' | 'allTime' | null>(null);
+  const [deleteHistoryPassword, setDeleteHistoryPassword] = useState("");
   const { toast } = useToast();
 
   const getItemKey = (itemName: string, category: string) =>
@@ -123,6 +125,19 @@ export default function HistoryPage() {
 
   const getStockItemIdFromTransaction = (itemName: string, category: string) =>
     items.find((item) => getItemKey(item.name, item.category) === getItemKey(itemName, category))?.id || "";
+
+  const findStockItemDocId = async (itemName: string, category: string) => {
+    const snapshot = await getDocs(
+      query(
+        collection(db, "stock-items"),
+        where("name", "==", itemName),
+        where("category", "==", category)
+      )
+    );
+
+    if (snapshot.empty) return null;
+    return snapshot.docs[0].id;
+  };
 
   const openEditDialog = (
     type: EditHistoryState["type"],
@@ -503,7 +518,7 @@ export default function HistoryPage() {
 
     // Calculate changes for each item
     const changedItems = new Map<string, { oldQty: number; newQty: number; change: number }>();
-    for (const [key, newQty] of newQtys.entries()) {
+    for (const [key, newQty] of Array.from(newQtys.entries())) {
       const oldQty = currentQtys.get(key) || 0;
       if (oldQty !== newQty) {
         changedItems.set(key, {
@@ -514,17 +529,26 @@ export default function HistoryPage() {
       }
     }
 
-    // If editFollowups is enabled and this is a heat treatment, update follow-ups
+    // Perform main edit - pass the base timestamp so HT gets oldest timestamp
+    const baseTimestamp = Timestamp.now();
+    
+    // If editFollowups is enabled, update with follow-ups first
     if (editState.type === "process" && editState.editFollowups && changedItems.size > 0) {
       const mirrors = await findMirrorFollowUps(editState.groupId, user?.company);
       const validMirrors = mirrors.filter((m) => m.isValid);
 
       if (validMirrors.length > 0) {
-        // Update follow-up transactions
-        const now = Timestamp.now();
+        // Update follow-up transactions with staggered timestamps
+        // HT (oldest via baseTimestamp-3) -> FA (offset+1) -> OF (offset+2, newest)
         const updatePromises: Promise<void>[] = [];
 
         for (const mirror of validMirrors) {
+          const offset = mirror.transferType === "factory_transfer" ? 1 : 2;
+          const txTimestamp = new Timestamp(
+            baseTimestamp.seconds,
+            baseTimestamp.nanoseconds + offset
+          );
+          
           for (const tx of mirror.transactions) {
             const key = `${tx.itemId.toLowerCase()}::${tx.category.toLowerCase()}`;
             const change = changedItems.get(key)?.change || 0;
@@ -534,13 +558,13 @@ export default function HistoryPage() {
               if (newQty > 0) {
                 updatePromises.push(
                   updateDoc(doc(db, "transactions", tx.id), {
+                    timestamp: txTimestamp,
                     quantityChange: newQty,
                     edited: true,
-                    editedAt: now,
+                    editedAt: baseTimestamp,
                   })
                 );
               } else {
-                // Delete if quantity becomes 0
                 updatePromises.push(deleteDoc(doc(db, "transactions", tx.id)));
               }
             }
@@ -552,8 +576,7 @@ export default function HistoryPage() {
         }
       }
     }
-
-    // Perform main edit
+    
     await saveAdvancedGroupEdit({
       company: user?.company,
       type: editState.type,
@@ -568,6 +591,7 @@ export default function HistoryPage() {
       processSerialNumber: editState.type === "process" ? editState.processSerialNumber.trim() : undefined,
       user: { id: user?.uid || "", name: user?.displayName || "Unknown" },
       editFollowups: editState.editFollowups,
+      baseTimestamp,
     });
   };
 
@@ -630,47 +654,34 @@ export default function HistoryPage() {
 
         if (deleteOption === 'reverse' && deleteConfirmId.type === 'bulk') {
           // Find all items and restore their previous balances
-          const updatePromises = relevantTxs.map(tx => {
-            // Get the item ID from itemId field
-            const itemName = tx.itemId;
-            // Find the item in stock-items collection by name
-            return getDocs(
-              query(collection(db, "stock-items"), where("name", "==", itemName))
-            ).then(snapshot => {
-              if (!snapshot.empty) {
-                const itemId = snapshot.docs[0].id;
-                
-                // Prepare the update object based on transaction type
-                const updateObj: any = {
-                  lastUpdated: Timestamp.now()
-                };
-                
-                // If we have stored balance information, use it for precise restoration
-                if (tx.previousHTBalance !== undefined && tx.previousFABalance !== undefined && tx.previousOFBalance !== undefined) {
-                  updateObj.heatTreatmentBalance = tx.previousHTBalance;
-                  updateObj.factoryBalance = tx.previousFABalance;
-                  updateObj.officeBalance = tx.previousOFBalance;
-                  updateObj.quantity = tx.previousHTBalance + tx.previousFABalance + tx.previousOFBalance;
-                } else {
-                  // Fallback for old transactions without balance metadata
-                  // For backwards compatibility, restore total quantity from previousBalance
-                  updateObj.quantity = tx.previousBalance;
-                  
-                  // Try to infer which balance field was affected based on transaction type
-                  if (tx.type === 'sales') {
-                    updateObj.officeBalance = tx.previousBalance;
-                  } else if (tx.type === 'heat_treatment_created') {
-                    updateObj.heatTreatmentBalance = tx.previousBalance;
-                  } else if (tx.type === 'factory_transfer_created') {
-                    updateObj.heatTreatmentBalance = tx.previousBalance;
-                  } else if (tx.type === 'office_transfer_created') {
-                    updateObj.factoryBalance = tx.previousBalance;
-                  }
-                }
-                
-                return updateDoc(doc(db, "stock-items", itemId), updateObj);
+          const updatePromises = relevantTxs.map(async tx => {
+            const itemId = await findStockItemDocId(tx.itemId, tx.category);
+            if (!itemId) return;
+
+            const updateObj: any = {
+              lastUpdated: Timestamp.now()
+            };
+
+            if (tx.previousHTBalance !== undefined && tx.previousFABalance !== undefined && tx.previousOFBalance !== undefined) {
+              updateObj.heatTreatmentBalance = tx.previousHTBalance;
+              updateObj.factoryBalance = tx.previousFABalance;
+              updateObj.officeBalance = tx.previousOFBalance;
+              updateObj.quantity = tx.previousHTBalance + tx.previousFABalance + tx.previousOFBalance;
+            } else {
+              updateObj.quantity = tx.previousBalance;
+
+              if (tx.type === 'sales') {
+                updateObj.officeBalance = tx.previousBalance;
+              } else if (tx.type === 'heat_treatment_created') {
+                updateObj.heatTreatmentBalance = tx.previousBalance;
+              } else if (tx.type === 'factory_transfer_created') {
+                updateObj.heatTreatmentBalance = tx.previousBalance;
+              } else if (tx.type === 'office_transfer_created') {
+                updateObj.factoryBalance = tx.previousBalance;
               }
-            });
+            }
+
+            await updateDoc(doc(db, "stock-items", itemId), updateObj);
           });
           await Promise.all(updatePromises);
         }
@@ -698,12 +709,8 @@ export default function HistoryPage() {
         
         if (deleteOption === 'reverse' && tx && tx.type !== 'factory_transfer_created' && tx.type !== 'office_transfer_created' && tx.type !== 'sales') {
           // Restore previous balance (for bulk and process transactions)
-          const itemName = tx.itemId;
-          const snapshot = await getDocs(
-            query(collection(db, "stock-items"), where("name", "==", itemName))
-          );
-          if (!snapshot.empty) {
-            const itemId = snapshot.docs[0].id;
+          const itemId = await findStockItemDocId(tx.itemId, tx.category);
+          if (itemId) {
             
             // Prepare the update object
             const updateObj: any = {
@@ -724,12 +731,8 @@ export default function HistoryPage() {
           }
         } else if (deleteOption === 'reverse' && tx && (tx.type === 'sales' || tx.type === 'factory_transfer_created' || tx.type === 'office_transfer_created')) {
           // For sales, factory_transfer, and office_transfer, restore location-specific balances
-          const itemName = tx.itemId;
-          const snapshot = await getDocs(
-            query(collection(db, "stock-items"), where("name", "==", itemName))
-          );
-          if (!snapshot.empty) {
-            const itemId = snapshot.docs[0].id;
+          const itemId = await findStockItemDocId(tx.itemId, tx.category);
+          if (itemId) {
             
             // Prepare the update object based on transaction metadata
             const updateObj: any = {
@@ -891,15 +894,7 @@ export default function HistoryPage() {
   };
 
   const handleDeleteHistoryByRange = async (range: 'lastMonth' | 'lastQuarter' | 'lastYear' | 'allTime') => {
-    const password = window.prompt("Enter the 4-digit password to delete history:");
-    if (password === null) {
-      return;
-    }
-    if (!validateHistoryPassword(password)) {
-      return;
-    }
-
-    if (!confirm(`Are you sure you want to delete transactions from the last ${range === 'lastMonth' ? 'month' : range === 'lastQuarter' ? 'quarter' : range === 'lastYear' ? 'year' : 'all time'}? This cannot be undone.`)) {
+    if (!validateHistoryPassword(deleteHistoryPassword)) {
       return;
     }
 
@@ -936,6 +931,8 @@ export default function HistoryPage() {
         title: "Success",
         description: `Deleted ${snapshot.docs.length} transaction(s)`,
       });
+      setDeleteHistoryRange(null);
+      setDeleteHistoryPassword("");
     } catch (error) {
       console.error("Error deleting transactions:", error);
       toast({
@@ -944,6 +941,13 @@ export default function HistoryPage() {
         description: "Failed to delete transactions",
       });
     }
+  };
+
+  const getDeleteHistoryRangeLabel = (range: 'lastMonth' | 'lastQuarter' | 'lastYear' | 'allTime') => {
+    if (range === 'lastMonth') return 'last month';
+    if (range === 'lastQuarter') return 'last quarter';
+    if (range === 'lastYear') return 'last year';
+    return 'all time';
   };
 
   const formatExactTime = (date: Date) => {
@@ -1146,17 +1150,29 @@ export default function HistoryPage() {
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-48">
-                <DropdownMenuItem onClick={() => handleDeleteHistoryByRange('lastMonth')}>
+                <DropdownMenuItem onClick={() => {
+                  setDeleteHistoryRange('lastMonth');
+                  setDeleteHistoryPassword("");
+                }}>
                   Delete Last Month
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handleDeleteHistoryByRange('lastQuarter')}>
+                <DropdownMenuItem onClick={() => {
+                  setDeleteHistoryRange('lastQuarter');
+                  setDeleteHistoryPassword("");
+                }}>
                   Delete Last Quarter
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handleDeleteHistoryByRange('lastYear')}>
+                <DropdownMenuItem onClick={() => {
+                  setDeleteHistoryRange('lastYear');
+                  setDeleteHistoryPassword("");
+                }}>
                   Delete Last Year
                 </DropdownMenuItem>
                 <DropdownMenuItem 
-                  onClick={() => handleDeleteHistoryByRange('allTime')}
+                  onClick={() => {
+                    setDeleteHistoryRange('allTime');
+                    setDeleteHistoryPassword("");
+                  }}
                   className="text-red-600"
                 >
                   Delete All History
@@ -2022,8 +2038,13 @@ export default function HistoryPage() {
                 </div><div>
                   <Label className="text-sm font-medium text-slate-700">Password</Label>
                   <Input
-                    type="password"
+                    type="text"
                     inputMode="numeric"
+                    autoComplete="one-time-code"
+                    name="history-edit-code"
+                    data-form-type="other"
+                    data-lpignore="true"
+                    spellCheck={false}
                     maxLength={4}
                     placeholder="Enter 4-digit password"
                     value={editPassword}
@@ -2181,8 +2202,13 @@ export default function HistoryPage() {
                 </label>
                 <Input
                   id="history-action-password"
-                  type="password"
+                  type="text"
                   inputMode="numeric"
+                  autoComplete="one-time-code"
+                  name="history-action-code"
+                  data-form-type="other"
+                  data-lpignore="true"
+                  spellCheck={false}
                   maxLength={4}
                   placeholder="Enter password"
                   value={deletePassword}
@@ -2223,6 +2249,67 @@ export default function HistoryPage() {
                 }}
               >
                 Cancel
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={deleteHistoryRange !== null}
+          onOpenChange={(open) => {
+            if (!open) {
+              setDeleteHistoryRange(null);
+              setDeleteHistoryPassword("");
+            }
+          }}
+        >
+          <DialogContent className="sm:max-w-[500px]">
+            <DialogHeader>
+              <DialogTitle>Delete History Range</DialogTitle>
+              <DialogDescription>
+                {deleteHistoryRange
+                  ? `Delete transactions from ${getDeleteHistoryRangeLabel(deleteHistoryRange)}. This cannot be undone.`
+                  : "Delete a selected range of history."}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <Label htmlFor="history-range-delete-code">4-digit code</Label>
+                <Input
+                  id="history-range-delete-code"
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  name="history-range-delete-code"
+                  data-form-type="other"
+                  data-lpignore="true"
+                  spellCheck={false}
+                  maxLength={4}
+                  placeholder="Enter code"
+                  value={deleteHistoryPassword}
+                  onChange={(e) => setDeleteHistoryPassword(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setDeleteHistoryRange(null);
+                  setDeleteHistoryPassword("");
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={() => {
+                  if (deleteHistoryRange) {
+                    handleDeleteHistoryByRange(deleteHistoryRange);
+                  }
+                }}
+              >
+                Delete History
               </Button>
             </DialogFooter>
           </DialogContent>
