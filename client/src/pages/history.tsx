@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { useTransactions, useLocations, useStockItems } from "@/lib/firestore-hooks";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { Spinner } from "@/components/ui/spinner";
 import { format } from "date-fns";
 import { capitalize, naturalCompare } from "@/lib/utils";
@@ -88,18 +88,21 @@ interface EditHistoryState {
 
 export default function HistoryPage() {
   const HISTORY_ACTION_PASSWORD = "2026";
-  const { transactions, loading } = useTransactions(10000);
+  const [groupDisplayLimit, setGroupDisplayLimit] = useState(100);
+  const [rawTransactionLimit, setRawTransactionLimit] = useState(500);
+  const [selectedDate, setSelectedDate] = useState<string>("");
+  const [selectedFilters, setSelectedFilters] = useState<string[]>([]);
+  const loadAllTransactions = selectedDate !== "" || selectedFilters.length > 0;
+  const { transactions, loading, hasMore } = useTransactions(rawTransactionLimit, loadAllTransactions);
   const { locations } = useLocations();
   const { items } = useStockItems();
   const { user } = useAuth();
-  const [selectedDate, setSelectedDate] = useState<string>("");
   const [expandedBulkId, setExpandedBulkId] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<any>(null);
   const [deletePassword, setDeletePassword] = useState("");
   const [editState, setEditState] = useState<EditHistoryState | null>(null);
   const [editPassword, setEditPassword] = useState("");
   const [isEditSubmitting, setIsEditSubmitting] = useState(false);
-  const [selectedFilters, setSelectedFilters] = useState<string[]>([]);
   const [expandedSalesFilter, setExpandedSalesFilter] = useState(false);
   const [nonMatchingMirrorsDialog, setNonMatchingMirrorsDialog] = useState<{ show: boolean; proceed: (() => void) | null } | null>(null);
   const [noFollowUpsDialog, setNoFollowUpsDialog] = useState<boolean>(false);
@@ -286,6 +289,23 @@ export default function HistoryPage() {
     
     return result;
   }, [transactions, selectedDate, selectedFilters]);
+
+  const groupedHistoryItems = useMemo(
+    () => groupBulkTransactions(filteredTransactions),
+    [filteredTransactions]
+  );
+  const visibleGroupedHistoryItems = useMemo(
+    () => (loadAllTransactions ? groupedHistoryItems : groupedHistoryItems.slice(0, groupDisplayLimit)),
+    [groupDisplayLimit, groupedHistoryItems, loadAllTransactions]
+  );
+
+  useEffect(() => {
+    if (loadAllTransactions) return;
+    if (!hasMore) return;
+    if (groupedHistoryItems.length >= groupDisplayLimit) return;
+
+    setRawTransactionLimit((current) => current + 500);
+  }, [groupDisplayLimit, groupedHistoryItems.length, hasMore, loadAllTransactions]);
 
   const canReverseDelete = deleteConfirmId
     ? deleteConfirmId.isBulkGroup
@@ -789,13 +809,13 @@ export default function HistoryPage() {
     }
   };
 
-  const sortItemsByName = (items: any[]) => {
+  function sortItemsByName(items: any[]) {
     return [...items].sort((a, b) => {
       return naturalCompare(a.itemId, b.itemId);
     });
-  };
+  }
 
-  const groupBulkTransactions = (txs: any[]) => {
+  function groupBulkTransactions(txs: any[]) {
     const grouped: { [key: string]: any[] } = {};
     const processGrouped: { [key: string]: any[] } = {};
     const transferGrouped: { [key: string]: any[] } = {};
@@ -891,7 +911,7 @@ export default function HistoryPage() {
       const timeB = new Date(b.timestamp).getTime();
       return timeB - timeA;
     });
-  };
+  }
 
   const handleDeleteHistoryByRange = async (range: 'lastMonth' | 'lastQuarter' | 'lastYear' | 'allTime') => {
     if (!validateHistoryPassword(deleteHistoryPassword)) {
@@ -1184,16 +1204,23 @@ export default function HistoryPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle>Recent Activity</CardTitle>
+            <div className="flex items-center justify-between gap-3">
+              <CardTitle>Recent Activity</CardTitle>
+              <span className="text-xs text-slate-500">
+                {loadAllTransactions
+                  ? `Showing all ${groupedHistoryItems.length} matching entr${groupedHistoryItems.length === 1 ? "y" : "ies"}`
+                  : `Showing latest ${visibleGroupedHistoryItems.length} entr${visibleGroupedHistoryItems.length === 1 ? "y" : "ies"}`}
+              </span>
+            </div>
           </CardHeader>
           <CardContent className="p-0">
             <div className="divide-y divide-slate-100">
-              {filteredTransactions.length === 0 ? (
+              {visibleGroupedHistoryItems.length === 0 ? (
                 <div className="p-8 text-center text-slate-500">
                   No transactions found
                 </div>
               ) : (
-                groupBulkTransactions(filteredTransactions).map((item) => {
+                visibleGroupedHistoryItems.map((item) => {
                   if (item.type === 'bulk') {
                     const bulkTransactions = item.transactions;
                     const isExpanded = expandedBulkId === item.id;
@@ -1813,6 +1840,16 @@ export default function HistoryPage() {
                 })
               )}
             </div>
+            {!loadAllTransactions && (hasMore || groupedHistoryItems.length > visibleGroupedHistoryItems.length) && (
+              <div className="border-t border-slate-100 p-4 flex justify-center">
+                <Button
+                  variant="outline"
+                  onClick={() => setGroupDisplayLimit((current) => current + 100)}
+                >
+                  Load More
+                </Button>
+              </div>
+            )}
           </CardContent>
         </Card>
 
