@@ -113,6 +113,8 @@ export function useTransactions(limit: number = 50, loadAll: boolean = false) {
           newHTBalance: data.newHTBalance,
           newFABalance: data.newFABalance,
           newOFBalance: data.newOFBalance,
+          historyDeleteOnly: data.historyDeleteOnly || false,
+          manualStockEdit: data.manualStockEdit || false,
           user: data.user || { id: "", name: "Unknown" },
         };
       });

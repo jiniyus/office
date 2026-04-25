@@ -8,11 +8,10 @@ import { AuthProvider, ProtectedRoute } from "@/lib/auth";
 import NotFound from "@/pages/not-found";
 import Login from "@/pages/login";
 import Stock from "@/pages/stock";
-
-const ProcessPage = lazy(() => import("@/pages/process"));
-const LocationPage = lazy(() => import("@/pages/location"));
-const HistoryPage = lazy(() => import("@/pages/history"));
-const Profile = lazy(() => import("@/pages/profile"));
+import ProcessPage from "@/pages/process";
+import LocationPage from "@/pages/location";
+import HistoryPage from "@/pages/history";
+import Profile from "@/pages/profile";
 
 function PageLoader() {
   return (
@@ -40,16 +39,16 @@ function Router() {
         <ProtectedRoute component={Stock} />
       </Route>
       <Route path="/process">
-        <ProtectedRoute component={withLazyPage(ProcessPage)} />
+        <ProtectedRoute component={ProcessPage} />
       </Route>
       <Route path="/location">
-        <ProtectedRoute component={withLazyPage(LocationPage)} />
+        <ProtectedRoute component={LocationPage} />
       </Route>
       <Route path="/history">
-        <ProtectedRoute component={withLazyPage(HistoryPage)} />
+        <ProtectedRoute component={HistoryPage} />
       </Route>
       <Route path="/profile">
-        <ProtectedRoute component={withLazyPage(Profile)} />
+        <ProtectedRoute component={Profile} />
       </Route>
       <Route component={NotFound} />
     </Switch>

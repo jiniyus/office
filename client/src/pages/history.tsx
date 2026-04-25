@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { useTransactions, useLocations, useStockItems } from "@/lib/firestore-hooks";
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, type FocusEvent } from "react";
 import { Spinner } from "@/components/ui/spinner";
 import { format } from "date-fns";
 import { capitalize, naturalCompare } from "@/lib/utils";
@@ -98,6 +98,7 @@ export default function HistoryPage() {
   const { items } = useStockItems();
   const { user } = useAuth();
   const [expandedBulkId, setExpandedBulkId] = useState<string | null>(null);
+  const [expandedSingleHistoryId, setExpandedSingleHistoryId] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<any>(null);
   const [deletePassword, setDeletePassword] = useState("");
   const [editState, setEditState] = useState<EditHistoryState | null>(null);
@@ -112,6 +113,10 @@ export default function HistoryPage() {
 
   const getItemKey = (itemName: string, category: string) =>
     `${itemName.toLowerCase()}::${category.toLowerCase()}`;
+
+  const selectAllOnFocus = (event: FocusEvent<HTMLInputElement>) => {
+    event.target.select();
+  };
 
   const toDateInputValue = (date?: Date) => {
     if (!date) return new Date().toISOString().split("T")[0];
@@ -313,7 +318,9 @@ export default function HistoryPage() {
       : (() => {
           const tx = filteredTransactions.find(t => t.id === deleteConfirmId.id);
           return tx
-            ? tx.type !== "factory_transfer_created" && tx.type !== "office_transfer_created"
+            ? !tx.historyDeleteOnly &&
+              tx.type !== "factory_transfer_created" &&
+              tx.type !== "office_transfer_created"
             : true;
         })()
     : false;
@@ -814,6 +821,44 @@ export default function HistoryPage() {
       return naturalCompare(a.itemId, b.itemId);
     });
   }
+
+  const renderBalanceBreakdown = (entry: any) => {
+    if (
+      entry.previousHTBalance === undefined ||
+      entry.previousFABalance === undefined ||
+      entry.previousOFBalance === undefined ||
+      entry.newHTBalance === undefined ||
+      entry.newFABalance === undefined ||
+      entry.newOFBalance === undefined
+    ) {
+      return null;
+    }
+
+    return (
+      <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50/80 p-3">
+        <div className="grid grid-cols-3 gap-2">
+          <div className="rounded-md bg-blue-50 px-3 py-2 text-center">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-blue-700">HT</div>
+            <div className="mt-1 text-xs text-slate-600">
+              {entry.previousHTBalance} to <span className="font-semibold text-slate-900">{entry.newHTBalance}</span>
+            </div>
+          </div>
+          <div className="rounded-md bg-blue-50 px-3 py-2 text-center">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-blue-700">FA</div>
+            <div className="mt-1 text-xs text-slate-600">
+              {entry.previousFABalance} to <span className="font-semibold text-slate-900">{entry.newFABalance}</span>
+            </div>
+          </div>
+          <div className="rounded-md bg-blue-50 px-3 py-2 text-center">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-blue-700">OF</div>
+            <div className="mt-1 text-xs text-slate-600">
+              {entry.previousOFBalance} to <span className="font-semibold text-slate-900">{entry.newOFBalance}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   function groupBulkTransactions(txs: any[]) {
     const grouped: { [key: string]: any[] } = {};
@@ -1721,118 +1766,152 @@ export default function HistoryPage() {
                   } else {
                     const entry = item.transaction;
                     const isIncrease = entry.quantityChange > 0;
+                    const canExpandBreakdown =
+                      entry.manualStockEdit &&
+                      entry.previousHTBalance !== undefined &&
+                      entry.previousFABalance !== undefined &&
+                      entry.previousOFBalance !== undefined &&
+                      entry.newHTBalance !== undefined &&
+                      entry.newFABalance !== undefined &&
+                      entry.newOFBalance !== undefined;
+                    const isExpanded = expandedSingleHistoryId === entry.id;
                     const location = entry.locationId ? locations.find(l => l.id === entry.locationId) : null;
                     return (
-                      <div key={entry.id} className="p-3 flex items-center justify-between hover:bg-slate-50 transition-colors gap-4">
-                        <div className="flex items-center gap-3 flex-1 min-w-0">
-                          <div className={`
-                            h-9 w-9 rounded-full flex items-center justify-center border flex-shrink-0
-                            ${isIncrease
-                              ? 'bg-emerald-50 border-emerald-100 text-emerald-600' 
-                              : 'bg-amber-50 border-amber-100 text-amber-600'}
-                          `}>
-                            {isIncrease ? <ArrowDownLeft className="h-4 w-4" /> : <ArrowUpRight className="h-4 w-4" />}
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2">
-                              <p className="text-sm font-semibold text-slate-900 truncate">
-                                {capitalize(entry.itemId)}
-                              </p>
-                              {entry.edited && (
-                                <Badge className="bg-amber-100 text-amber-700 text-xs">Edited</Badge>
-                              )}
-                              {entry.type === 'creation' && (
-                                <Badge className="bg-blue-100 text-blue-700 text-xs">NEW</Badge>
-                              )}
-                              {entry.type === 'transfer' && (
-                                <Badge className="bg-purple-100 text-purple-700 text-xs">TRANSFER</Badge>
-                              )}
-                              {entry.type === 'heat_treatment_created' && (
-                                <Badge className="bg-orange-100 text-orange-700 text-xs">HEAT TREATMENT</Badge>
-                              )}
-                              {entry.type === 'factory_transfer_created' && (
-                                <Badge className="bg-blue-100 text-blue-700 text-xs">FACTORY TRANSFER</Badge>
-                              )}
-                              {entry.type === 'office_transfer_created' && (
-                                <Badge className="bg-green-100 text-green-700 text-xs">OFFICE TRANSFER</Badge>
-                              )}
+                      <div key={entry.id} className="border-b border-slate-100 last:border-b-0">
+                        <div
+                          className={`p-3 flex items-center justify-between hover:bg-slate-50 transition-colors gap-4 ${canExpandBreakdown ? 'cursor-pointer' : ''}`}
+                          onClick={() => {
+                            if (!canExpandBreakdown) return;
+                            setExpandedSingleHistoryId(isExpanded ? null : entry.id);
+                          }}
+                        >
+                          <div className="flex items-center gap-3 flex-1 min-w-0">
+                            {canExpandBreakdown && (
+                              <div className="flex-shrink-0">
+                                {isExpanded ? (
+                                  <ChevronDown className="h-5 w-5 text-slate-400" />
+                                ) : (
+                                  <ChevronRight className="h-5 w-5 text-slate-400" />
+                                )}
+                              </div>
+                            )}
+                            <div className={`
+                              h-9 w-9 rounded-full flex items-center justify-center border flex-shrink-0
+                              ${isIncrease
+                                ? 'bg-emerald-50 border-emerald-100 text-emerald-600' 
+                                : 'bg-amber-50 border-amber-100 text-amber-600'}
+                            `}>
+                              {isIncrease ? <ArrowDownLeft className="h-4 w-4" /> : <ArrowUpRight className="h-4 w-4" />}
                             </div>
-                            <div className="flex items-center gap-2 flex-wrap mt-1">
-                              <Badge variant="secondary" className="text-xs font-normal bg-slate-100 text-slate-600">
-                                {capitalize(entry.category)}
-                              </Badge>
-                              {location && (
-                                <Badge variant="secondary" className="text-xs font-normal bg-blue-50 text-blue-700">
-                                  {capitalize(location.name)}
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <p className="text-sm font-semibold text-slate-900 truncate">
+                                  {capitalize(entry.itemId)}
+                                </p>
+                                {entry.edited && (
+                                  <Badge className="bg-amber-100 text-amber-700 text-xs">Edited</Badge>
+                                )}
+                                {entry.type === 'creation' && (
+                                  <Badge className="bg-blue-100 text-blue-700 text-xs">NEW</Badge>
+                                )}
+                                {entry.manualStockEdit && (
+                                  <Badge className="bg-slate-100 text-slate-700 text-xs">MANUAL EDIT</Badge>
+                                )}
+                                {entry.type === 'transfer' && (
+                                  <Badge className="bg-purple-100 text-purple-700 text-xs">TRANSFER</Badge>
+                                )}
+                                {entry.type === 'heat_treatment_created' && (
+                                  <Badge className="bg-orange-100 text-orange-700 text-xs">HEAT TREATMENT</Badge>
+                                )}
+                                {entry.type === 'factory_transfer_created' && (
+                                  <Badge className="bg-blue-100 text-blue-700 text-xs">FACTORY TRANSFER</Badge>
+                                )}
+                                {entry.type === 'office_transfer_created' && (
+                                  <Badge className="bg-green-100 text-green-700 text-xs">OFFICE TRANSFER</Badge>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-2 flex-wrap mt-1">
+                                <Badge variant="secondary" className="text-xs font-normal bg-slate-100 text-slate-600">
+                                  {capitalize(entry.category)}
                                 </Badge>
-                              )}
-                              <span className="text-xs text-slate-500">
-                                <span className="font-medium text-slate-700">{entry.user.name}</span>
-                              </span>
-                              <span className="text-xs text-slate-400">
-                                {formatExactTime(entry.timestamp)}
-                              </span>
-                              {formatBusinessDate(entry.businessDate) && (
+                                {location && (
+                                  <Badge variant="secondary" className="text-xs font-normal bg-blue-50 text-blue-700">
+                                    {capitalize(location.name)}
+                                  </Badge>
+                                )}
                                 <span className="text-xs text-slate-500">
-                                  Business: <span className="font-medium text-slate-700">{formatBusinessDate(entry.businessDate)}</span>
+                                  <span className="font-medium text-slate-700">{entry.user.name}</span>
                                 </span>
-                              )}
-                              {entry.notes && (
-                                <span className="text-xs text-slate-500">
-                                  Remarks: <span className="font-medium text-slate-700">{entry.notes}</span>
+                                <span className="text-xs text-slate-400">
+                                  {formatExactTime(entry.timestamp)}
                                 </span>
-                              )}
-                            </div>
-                            <div className="flex items-center gap-2 mt-1">
-                              {entry.type === 'creation' ? (
-                                <span className="text-xs text-slate-600">Initial Stock: <span className="font-semibold text-blue-600">{entry.balance}</span></span>
-                              ) : (
-                                <>
-                                  <span className="text-xs text-slate-600">Before: <span className="font-semibold">{entry.previousBalance}</span></span>
-                                  <span className="text-xs text-slate-600">After: <span className="font-semibold">{entry.balance}</span></span>
-                                </>
-                              )}
+                                {formatBusinessDate(entry.businessDate) && (
+                                  <span className="text-xs text-slate-500">
+                                    Business: <span className="font-medium text-slate-700">{formatBusinessDate(entry.businessDate)}</span>
+                                  </span>
+                                )}
+                                {entry.notes && (
+                                  <span className="text-xs text-slate-500">
+                                    Remarks: <span className="font-medium text-slate-700">{entry.notes}</span>
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-2 mt-1">
+                                {entry.type === 'creation' ? (
+                                  <span className="text-xs text-slate-600">Initial Stock: <span className="font-semibold text-blue-600">{entry.balance}</span></span>
+                                ) : (
+                                  <>
+                                    <span className="text-xs text-slate-600">Before: <span className="font-semibold">{entry.previousBalance}</span></span>
+                                    <span className="text-xs text-slate-600">After: <span className="font-semibold">{entry.balance}</span></span>
+                                  </>
+                                )}
+                              </div>
+                              {canExpandBreakdown && isExpanded && renderBalanceBreakdown(entry)}
                             </div>
                           </div>
-                        </div>
-                        <div className="flex items-center gap-3">
-                          <div className={`text-sm font-black flex-shrink-0 ${isIncrease ? 'text-emerald-600' : 'text-red-600'}`}>
-                            {isIncrease ? '+' : ''}{entry.quantityChange}
-                          </div>
-                          {(entry.type === 'heat_treatment_created' || entry.type === 'factory_transfer_created' || entry.type === 'office_transfer_created' || entry.type === 'sales') && (
+                          <div className="flex items-center gap-3">
+                            <div className={`text-sm font-black flex-shrink-0 ${isIncrease ? 'text-emerald-600' : 'text-red-600'}`}>
+                              {isIncrease ? '+' : ''}{entry.quantityChange}
+                            </div>
+                            {(entry.type === 'heat_treatment_created' || entry.type === 'factory_transfer_created' || entry.type === 'office_transfer_created' || entry.type === 'sales') && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-8 px-2 text-slate-600 hover:text-slate-700 hover:bg-slate-100"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openEditDialog(
+                                    entry.type === "heat_treatment_created"
+                                      ? "process"
+                                      : entry.type === "factory_transfer_created"
+                                      ? "factory_transfer"
+                                      : entry.type === "office_transfer_created"
+                                      ? "office_transfer"
+                                      : "sales",
+                                    entry.processId || entry.transferId || entry.salesId || entry.id,
+                                    [entry],
+                                    {
+                                      title: "Edit Entry",
+                                      processSerialNumber: entry.processSerialNumber,
+                                    }
+                                  );
+                                }}
+                              >
+                                <Pencil className="h-4 w-4" />
+                              </Button>
+                            )}
                             <Button
                               variant="ghost"
                               size="sm"
-                              className="h-8 px-2 text-slate-600 hover:text-slate-700 hover:bg-slate-100"
-                              onClick={() =>
-                                openEditDialog(
-                                  entry.type === "heat_treatment_created"
-                                    ? "process"
-                                    : entry.type === "factory_transfer_created"
-                                    ? "factory_transfer"
-                                    : entry.type === "office_transfer_created"
-                                    ? "office_transfer"
-                                    : "sales",
-                                  entry.processId || entry.transferId || entry.salesId || entry.id,
-                                  [entry],
-                                  {
-                                    title: "Edit Entry",
-                                    processSerialNumber: entry.processSerialNumber,
-                                  }
-                                )
-                              }
+                              className="h-8 px-2 text-red-600 hover:text-red-700 hover:bg-red-50"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteTransaction(entry.id);
+                              }}
                             >
-                              <Pencil className="h-4 w-4" />
+                              <Trash2 className="h-4 w-4" />
                             </Button>
-                          )}
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-8 px-2 text-red-600 hover:text-red-700 hover:bg-red-50"
-                            onClick={() => handleDeleteTransaction(entry.id)}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
+                          </div>
                         </div>
                       </div>
                     );
@@ -2022,6 +2101,7 @@ export default function HistoryPage() {
                               min="1"
                               max={availableBalance}
                               value={row.quantity}
+                              onFocus={selectAllOnFocus}
                               onChange={(e) => {
                                 const rows = [...editState.rows];
                                 rows[index] = { ...rows[index], quantity: e.target.value };

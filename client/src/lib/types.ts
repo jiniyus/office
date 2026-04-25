@@ -61,6 +61,8 @@ export interface Transaction {
   newHTBalance?: number; // New heat treatment balance
   newFABalance?: number; // New factory balance
   newOFBalance?: number; // New office balance
+  historyDeleteOnly?: boolean; // Allow only log deletion in History
+  manualStockEdit?: boolean; // Marks direct stock balance edits
   user: {
     id: string;
     name: string;

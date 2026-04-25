@@ -3,14 +3,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
-import { Plus, Search, Trash2, Minus, Check, X, ArrowRightLeft, Zap, Filter, ChevronDown, ChevronUp } from "lucide-react";
+import { Plus, Search, Trash2, Minus, Check, X, ArrowRightLeft, Zap, Filter, ChevronDown, ChevronUp, Pencil } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, type FocusEvent } from "react";
 import {
   Dialog,
   DialogContent,
@@ -82,8 +82,19 @@ export default function Stock() {
   const [newProduct, setNewProduct] = useState({
     name: "",
     category: "",
-    quantity: "",
-    size: "",
+    heatTreatmentQuantity: "",
+    factoryQuantity: "",
+    officeQuantity: "",
+  });
+  const [editingProductId, setEditingProductId] = useState<string | undefined>(undefined);
+  const [editingProductInfo, setEditingProductInfo] = useState({
+    name: "",
+    category: "",
+  });
+  const [editProductBalances, setEditProductBalances] = useState({
+    heatTreatmentQuantity: "",
+    factoryQuantity: "",
+    officeQuantity: "",
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -148,6 +159,58 @@ export default function Stock() {
     const cats = Array.from(new Set(items.map(item => item.category)));
     return cats.sort();
   }, [items]);
+
+  const selectAllOnFocus = (event: FocusEvent<HTMLInputElement>) => {
+    event.target.select();
+  };
+
+  const getNextHeatTreatmentSerialNumber = async () => {
+    const processesSnapshot = await getDocs(query(collection(db, "processes")));
+    const maxSerialNumber = processesSnapshot.docs.reduce((maxValue, docSnap) => {
+      const serialValue = parseInt(String(docSnap.data().serialNumber || "0"), 10);
+      if (Number.isNaN(serialValue)) return maxValue;
+      return Math.max(maxValue, serialValue);
+    }, 0);
+
+    return String(maxSerialNumber + 1);
+  };
+
+  const createManualHeatTreatmentProcess = async ({
+    stockItemId,
+    itemName,
+    category,
+    quantity,
+  }: {
+    stockItemId: string;
+    itemName: string;
+    category: string;
+    quantity: number;
+  }) => {
+    if (quantity <= 0) return;
+
+    const serialNumber = await getNextHeatTreatmentSerialNumber();
+    const now = Timestamp.now();
+    const processItems = [{
+      itemId: stockItemId,
+      itemName,
+      category,
+      quantity,
+    }];
+
+    await addDoc(collection(db, "processes"), {
+      serialNumber,
+      date: now,
+      processType: "heat_treatment",
+      items: processItems,
+      originalItems: processItems,
+      source: "manual_stock_edit",
+      createdAt: now,
+      createdBy: {
+        id: user?.uid || "",
+        name: user?.displayName || "Unknown",
+      },
+    });
+  };
 
   const getTotalBalance = (item: any) => {
     return ((item.heatTreatmentBalance || 0) + (item.factoryBalance || 0) + (item.officeBalance || 0));
@@ -237,35 +300,154 @@ export default function Stock() {
     }
     setIsSubmitting(true);
     try {
-      const initialQuantity = parseInt(newProduct.quantity) || 0;
+      const initialHTBalance = Math.max(0, parseInt(newProduct.heatTreatmentQuantity || "0", 10) || 0);
+      const initialFABalance = Math.max(0, parseInt(newProduct.factoryQuantity || "0", 10) || 0);
+      const initialOFBalance = Math.max(0, parseInt(newProduct.officeQuantity || "0", 10) || 0);
+      const initialQuantity = initialHTBalance + initialFABalance + initialOFBalance;
       const trimmedName = newProduct.name.trim();
       const trimmedCategory = newProduct.category.trim();
-      const trimmedSize = newProduct.size.trim() || null;
-      await addDoc(collection(db, "stock-items"), {
+      const stockDocRef = await addDoc(collection(db, "stock-items"), {
         name: trimmedName,
         category: trimmedCategory,
         quantity: initialQuantity,
-        size: trimmedSize,
+        heatTreatmentBalance: initialHTBalance,
+        factoryBalance: initialFABalance,
+        officeBalance: initialOFBalance,
         company: user?.company || "",
         createdAt: Timestamp.now(),
         createdBy: user?.email || "",
       });
       await addDoc(collection(db, "transactions"), {
-        itemId: newProduct.name,
-        category: newProduct.category,
+        itemId: trimmedName,
+        category: trimmedCategory,
         company: user?.company || "",
         quantityChange: initialQuantity,
         previousBalance: 0,
         balance: initialQuantity,
         timestamp: Timestamp.now(),
         type: 'creation',
+        previousHTBalance: 0,
+        previousFABalance: 0,
+        previousOFBalance: 0,
+        newHTBalance: initialHTBalance,
+        newFABalance: initialFABalance,
+        newOFBalance: initialOFBalance,
         user: { id: user?.uid || "", name: user?.displayName || "Unknown" }
       });
+      await createManualHeatTreatmentProcess({
+        stockItemId: stockDocRef.id,
+        itemName: trimmedName,
+        category: trimmedCategory,
+        quantity: initialHTBalance,
+      });
       toast({ title: "Success", description: "Product added successfully" });
-      setNewProduct({ name: "", category: "", quantity: "", size: "" });
-      setIsAddDialogOpen(false);
+      resetProductDialog();
     } catch (error) {
       toast({ variant: "destructive", title: "Error", description: "Failed to add product" });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const resetProductDialog = () => {
+    setIsAddDialogOpen(false);
+    setEditingProductId(undefined);
+    setEditingProductInfo({ name: "", category: "" });
+    setNewProduct({
+      name: "",
+      category: "",
+      heatTreatmentQuantity: "",
+      factoryQuantity: "",
+      officeQuantity: "",
+    });
+    setEditProductBalances({
+      heatTreatmentQuantity: "",
+      factoryQuantity: "",
+      officeQuantity: "",
+    });
+  };
+
+  const openEditProductDialog = (item: any) => {
+    setEditingProductId(item.id);
+    setEditingProductInfo({
+      name: item.name,
+      category: item.category,
+    });
+    setEditProductBalances({
+      heatTreatmentQuantity: ((item as any).heatTreatmentBalance || 0).toString(),
+      factoryQuantity: ((item as any).factoryBalance || 0).toString(),
+      officeQuantity: ((item as any).officeBalance || 0).toString(),
+    });
+    setIsAddDialogOpen(true);
+  };
+
+  const handleEditProduct = async () => {
+    if (!editingProductId) return;
+
+    const currentItem = items.find((item) => item.id === editingProductId);
+    if (!currentItem) {
+      toast({ variant: "destructive", title: "Error", description: "Selected item was not found" });
+      return;
+    }
+
+    const nextHTBalance = Math.max(0, parseInt(editProductBalances.heatTreatmentQuantity || "0", 10) || 0);
+    const nextFABalance = Math.max(0, parseInt(editProductBalances.factoryQuantity || "0", 10) || 0);
+    const nextOFBalance = Math.max(0, parseInt(editProductBalances.officeQuantity || "0", 10) || 0);
+
+    const previousHTBalance = (currentItem as any).heatTreatmentBalance || 0;
+    const previousFABalance = (currentItem as any).factoryBalance || 0;
+    const previousOFBalance = (currentItem as any).officeBalance || 0;
+    const previousTotal = previousHTBalance + previousFABalance + previousOFBalance;
+    const nextTotal = nextHTBalance + nextFABalance + nextOFBalance;
+    const quantityChange = nextTotal - previousTotal;
+    const createdHTQuantity = Math.max(0, nextHTBalance - previousHTBalance);
+
+    try {
+      setIsSubmitting(true);
+      const now = Timestamp.now();
+
+      await updateDoc(doc(db, "stock-items", editingProductId), {
+        heatTreatmentBalance: nextHTBalance,
+        factoryBalance: nextFABalance,
+        officeBalance: nextOFBalance,
+        quantity: nextTotal,
+        lastUpdated: now,
+      });
+
+      await addDoc(collection(db, "transactions"), {
+        itemId: currentItem.name,
+        category: currentItem.category,
+        company: user?.company || "",
+        notes: "Manual stock balance edit",
+        quantityChange,
+        previousBalance: previousTotal,
+        balance: nextTotal,
+        locationId: currentItem.locationId || null,
+        timestamp: now,
+        type: "adjustment",
+        affectedBalance: "manual_stock_edit",
+        previousHTBalance,
+        previousFABalance,
+        previousOFBalance,
+        newHTBalance: nextHTBalance,
+        newFABalance: nextFABalance,
+        newOFBalance: nextOFBalance,
+        historyDeleteOnly: true,
+        manualStockEdit: true,
+        user: { id: user?.uid || "", name: user?.displayName || "Unknown" }
+      });
+      await createManualHeatTreatmentProcess({
+        stockItemId: editingProductId,
+        itemName: currentItem.name,
+        category: currentItem.category,
+        quantity: createdHTQuantity,
+      });
+
+      toast({ title: "Success", description: "Stock balances updated successfully" });
+      resetProductDialog();
+    } catch (error) {
+      console.error("Error editing stock balances:", error);
+      toast({ variant: "destructive", title: "Error", description: "Failed to update stock balances" });
     } finally {
       setIsSubmitting(false);
     }
@@ -649,7 +831,16 @@ export default function Stock() {
             <div className="flex items-center justify-between gap-2">
               <Button
                 className="flex-1 h-10 shadow-lg shadow-primary/20"
-                onClick={() => setIsAddDialogOpen(true)}
+                onClick={() => {
+                  setEditingProductId(undefined);
+                  setEditingProductInfo({ name: "", category: "" });
+                  setEditProductBalances({
+                    heatTreatmentQuantity: "",
+                    factoryQuantity: "",
+                    officeQuantity: "",
+                  });
+                  setIsAddDialogOpen(true);
+                }}
                 disabled={isViewOnly}
               >
                 <Plus className="mr-2 h-4 w-4" /> Add Product
@@ -889,6 +1080,14 @@ export default function Stock() {
                           <Button
                             variant="ghost"
                             size="sm"
+                            className="h-8 w-8 p-0 text-slate-600 hover:text-slate-700 hover:bg-slate-100"
+                            onClick={() => openEditProductDialog(item)}
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
                             className="h-8 w-8 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
                             onClick={() => setDeleteConfirmId(item.id!)}
                           >
@@ -899,11 +1098,11 @@ export default function Stock() {
 
                       <div className="space-y-1">
                         <div className="flex items-center justify-between">
-                          <span className="text-slate-500 text-xs uppercase tracking-wider font-bold">Size</span>
+                          <span />
                           <span className="text-slate-500 text-xs uppercase tracking-wider font-bold">Quantity</span>
                         </div>
                         <div className="flex items-end justify-between gap-4">
-                          <span className="font-mono text-slate-700 font-bold">{capitalize(item.size || '') || 'N/A'}</span>
+                          <span className="text-slate-500 text-sm font-medium">Stock Balances</span>
                           <div className="flex flex-col items-end gap-2">
                             {/* Balance with Expandable - shows location-specific if filter active, total otherwise */}
                             <Button
@@ -1029,35 +1228,108 @@ export default function Stock() {
       </Dialog>
 
       {/* Add Product Dialog */}
-      <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
+      <Dialog
+        open={isAddDialogOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            resetProductDialog();
+            return;
+          }
+          setIsAddDialogOpen(true);
+        }}
+      >
         <DialogContent className="sm:max-w-[500px]">
           <DialogHeader>
-            <DialogTitle>Add New Product</DialogTitle>
-            <DialogDescription>Enter the details of the new product below.</DialogDescription>
+            <DialogTitle>{editingProductId ? "Edit Stock Balances" : "Add New Product"}</DialogTitle>
+            <DialogDescription>
+              {editingProductId
+                ? "Update the HT, factory, and office balances for this product. This creates a log-only manual edit entry."
+                : "Enter the details of the new product below."}
+            </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
             <div className="space-y-2">
               <Label htmlFor="name">Product Name *</Label>
-              <Input id="name" placeholder="Product name" value={newProduct.name} onChange={(e) => setNewProduct({ ...newProduct, name: e.target.value })} />
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="category">Category *</Label>
-                <Input id="category" placeholder="Category" value={newProduct.category} onChange={(e) => setNewProduct({ ...newProduct, category: e.target.value })} />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="quantity">Quantity (Optional)</Label>
-                <Input id="quantity" type="number" placeholder="0" min="0" value={newProduct.quantity} onChange={(e) => setNewProduct({ ...newProduct, quantity: e.target.value })} />
-              </div>
+              <Input
+                id="name"
+                placeholder="Product name"
+                value={editingProductId ? editingProductInfo.name : newProduct.name}
+                disabled={!!editingProductId}
+                onChange={(e) => setNewProduct({ ...newProduct, name: e.target.value })}
+              />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="size">Size (Optional)</Label>
-              <Input id="size" placeholder="Size" value={newProduct.size} onChange={(e) => setNewProduct({ ...newProduct, size: e.target.value })} />
+              <Label htmlFor="category">Category *</Label>
+              <Input
+                id="category"
+                placeholder="Category"
+                value={editingProductId ? editingProductInfo.category : newProduct.category}
+                disabled={!!editingProductId}
+                onChange={(e) => setNewProduct({ ...newProduct, category: e.target.value })}
+              />
+            </div>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              <div className="space-y-2">
+                <Label htmlFor={editingProductId ? "edit-ht-quantity" : "ht-quantity"}>HT Quantity</Label>
+                <Input
+                  id={editingProductId ? "edit-ht-quantity" : "ht-quantity"}
+                  type="number"
+                  placeholder="0"
+                  min="0"
+                  value={editingProductId ? editProductBalances.heatTreatmentQuantity : newProduct.heatTreatmentQuantity}
+                  onFocus={selectAllOnFocus}
+                  onChange={(e) =>
+                    editingProductId
+                      ? setEditProductBalances({ ...editProductBalances, heatTreatmentQuantity: e.target.value })
+                      : setNewProduct({ ...newProduct, heatTreatmentQuantity: e.target.value })
+                  }
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor={editingProductId ? "edit-fa-quantity" : "fa-quantity"}>FA Quantity</Label>
+                <Input
+                  id={editingProductId ? "edit-fa-quantity" : "fa-quantity"}
+                  type="number"
+                  placeholder="0"
+                  min="0"
+                  value={editingProductId ? editProductBalances.factoryQuantity : newProduct.factoryQuantity}
+                  onFocus={selectAllOnFocus}
+                  onChange={(e) =>
+                    editingProductId
+                      ? setEditProductBalances({ ...editProductBalances, factoryQuantity: e.target.value })
+                      : setNewProduct({ ...newProduct, factoryQuantity: e.target.value })
+                  }
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor={editingProductId ? "edit-of-quantity" : "of-quantity"}>OF Quantity</Label>
+                <Input
+                  id={editingProductId ? "edit-of-quantity" : "of-quantity"}
+                  type="number"
+                  placeholder="0"
+                  min="0"
+                  value={editingProductId ? editProductBalances.officeQuantity : newProduct.officeQuantity}
+                  onFocus={selectAllOnFocus}
+                  onChange={(e) =>
+                    editingProductId
+                      ? setEditProductBalances({ ...editProductBalances, officeQuantity: e.target.value })
+                      : setNewProduct({ ...newProduct, officeQuantity: e.target.value })
+                  }
+                />
+              </div>
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setIsAddDialogOpen(false)} disabled={isSubmitting}>Cancel</Button>
-            <Button onClick={handleAddProduct} disabled={isSubmitting}>{isSubmitting ? "Adding..." : "Add Product"}</Button>
+            <Button variant="outline" onClick={resetProductDialog} disabled={isSubmitting}>Cancel</Button>
+            <Button onClick={editingProductId ? handleEditProduct : handleAddProduct} disabled={isSubmitting}>
+              {isSubmitting
+                ? editingProductId
+                  ? "Saving..."
+                  : "Adding..."
+                : editingProductId
+                ? "Save Changes"
+                : "Add Product"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -18,6 +18,8 @@ interface User {
   company?: string;
 }
 
+const AUTH_CACHE_KEY = "stockpro-auth-cache";
+
 interface AuthContextType {
   user: User | null;
   loading: boolean;
@@ -35,6 +37,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [shouldRedirectToHome, setShouldRedirectToHome] = useState(false);
 
   useEffect(() => {
+    try {
+      const cachedUserRaw = localStorage.getItem(AUTH_CACHE_KEY);
+      if (!cachedUserRaw) return;
+
+      const cachedUser = JSON.parse(cachedUserRaw) as User;
+      if (cachedUser?.uid) {
+        setUser(cachedUser);
+        setLoading(false);
+      }
+    } catch {
+      localStorage.removeItem(AUTH_CACHE_KEY);
+    }
+  }, []);
+
+  useEffect(() => {
     // Listen to Firebase auth state changes
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser: FirebaseUser | null) => {
       if (firebaseUser) {
@@ -43,32 +60,39 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           const userDoc = await getDoc(doc(db, "users", firebaseUser.uid));
           if (userDoc.exists()) {
             const userData = userDoc.data();
-            setUser({
+            const nextUser = {
               uid: firebaseUser.uid,
               email: firebaseUser.email || "",
               displayName: userData.displayName || firebaseUser.email?.split("@")[0] || "User",
               photoURL: firebaseUser.photoURL || undefined,
               company: userData.company
-            });
+            };
+            setUser(nextUser);
+            localStorage.setItem(AUTH_CACHE_KEY, JSON.stringify(nextUser));
           } else {
             // User exists in auth but not in Firestore
-            setUser({
+            const nextUser = {
               uid: firebaseUser.uid,
               email: firebaseUser.email || "",
               displayName: firebaseUser.email?.split("@")[0] || "User",
               photoURL: firebaseUser.photoURL || undefined
-            });
+            };
+            setUser(nextUser);
+            localStorage.setItem(AUTH_CACHE_KEY, JSON.stringify(nextUser));
           }
         } catch (error) {
-          setUser({
+          const nextUser = {
             uid: firebaseUser.uid,
             email: firebaseUser.email || "",
             displayName: firebaseUser.email?.split("@")[0] || "User",
             photoURL: firebaseUser.photoURL || undefined
-          });
+          };
+          setUser(nextUser);
+          localStorage.setItem(AUTH_CACHE_KEY, JSON.stringify(nextUser));
         }
       } else {
         setUser(null);
+        localStorage.removeItem(AUTH_CACHE_KEY);
       }
       setLoading(false);
     });

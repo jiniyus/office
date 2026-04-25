@@ -58,6 +58,7 @@ interface ProcessFirestoreData {
   id: string;
   processType: "heat_treatment" | "factory_transfer" | "office_transfer";
   items: ProcessFirestoreItem[];
+  originalItems?: ProcessFirestoreItem[];
   createdAt: Timestamp;
 }
 
@@ -375,6 +376,9 @@ export default function ProcessPage() {
         const currentProcessItems: ProcessFirestoreItem[] = processSnapshot.exists()
           ? ((processSnapshot.data().items ?? []) as ProcessFirestoreItem[])
           : [];
+        const originalProcessItems: ProcessFirestoreItem[] = processSnapshot.exists()
+          ? ((processSnapshot.data().originalItems ?? processSnapshot.data().items ?? []) as ProcessFirestoreItem[])
+          : [];
 
         const getItemKey = (itemName: string, category: string) =>
           `${itemName.toLowerCase()}::${category.toLowerCase()}`;
@@ -384,6 +388,14 @@ export default function ProcessPage() {
           const itemKey = getItemKey(tx.itemId, tx.category);
           const currentQty = originalQtyByKey.get(itemKey) ?? 0;
           originalQtyByKey.set(itemKey, currentQty + Math.max(0, tx.quantityChange || 0));
+        }
+
+        if (originalQtyByKey.size === 0) {
+          for (const item of originalProcessItems) {
+            const itemKey = getItemKey(item.itemName, item.category);
+            const currentQty = originalQtyByKey.get(itemKey) ?? 0;
+            originalQtyByKey.set(itemKey, currentQty + (item.quantity || 0));
+          }
         }
 
         const remainingQtyByKey = new Map<string, number>();

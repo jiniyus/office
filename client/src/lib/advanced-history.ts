@@ -149,6 +149,8 @@ const mapTransactionDoc = (docSnap: any): Transaction => {
     newHTBalance: data.newHTBalance,
     newFABalance: data.newFABalance,
     newOFBalance: data.newOFBalance,
+    historyDeleteOnly: data.historyDeleteOnly || false,
+    manualStockEdit: data.manualStockEdit || false,
     user: data.user || { id: "", name: "Unknown" },
   };
 };
