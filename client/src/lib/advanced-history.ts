@@ -19,6 +19,8 @@ type AdvancedTransactionType =
   | "office_transfer_created"
   | "sales";
 
+type ReplayTransactionType = AdvancedTransactionType | "creation" | "adjustment";
+
 type EditableGroupType = "process" | "factory_transfer" | "office_transfer" | "sales";
 
 interface ProcessDocData {
@@ -81,15 +83,28 @@ const ADVANCED_TYPES: AdvancedTransactionType[] = [
   "sales",
 ];
 
-const TYPE_ORDER: Record<AdvancedTransactionType, number> = {
-  heat_treatment_created: 0,
-  factory_transfer_created: 1,
-  office_transfer_created: 2,
-  sales: 3,
+const REPLAY_TYPES: ReplayTransactionType[] = [
+  "creation",
+  "heat_treatment_created",
+  "factory_transfer_created",
+  "office_transfer_created",
+  "sales",
+  "adjustment",
+];
+
+const TYPE_ORDER: Record<ReplayTransactionType, number> = {
+  creation: 0,
+  heat_treatment_created: 1,
+  factory_transfer_created: 2,
+  office_transfer_created: 3,
+  sales: 4,
+  adjustment: 5,
 };
 
+const normalizeItemKeyPart = (value: string) => value.trim().replace(/\s+/g, " ").toLowerCase();
+
 const toItemKey = (itemName: string, category: string) =>
-  `${itemName.toLowerCase()}::${category.toLowerCase()}`;
+  `${normalizeItemKeyPart(itemName)}::${normalizeItemKeyPart(category)}`;
 
 const transactionDocIdKey = (tx: Transaction) => {
   if (tx.type === "heat_treatment_created") return tx.processId;
@@ -113,7 +128,8 @@ const compareAdvancedTransactions = (a: Transaction, b: Transaction) => {
   if (timeCompare !== 0) return timeCompare;
 
   const typeCompare =
-    TYPE_ORDER[a.type as AdvancedTransactionType] - TYPE_ORDER[b.type as AdvancedTransactionType];
+    (TYPE_ORDER[a.type as ReplayTransactionType] ?? Number.MAX_SAFE_INTEGER) -
+    (TYPE_ORDER[b.type as ReplayTransactionType] ?? Number.MAX_SAFE_INTEGER);
   if (typeCompare !== 0) return typeCompare;
 
   return a.id.localeCompare(b.id);
@@ -153,6 +169,231 @@ const mapTransactionDoc = (docSnap: any): Transaction => {
     manualStockEdit: data.manualStockEdit || false,
     user: data.user || { id: "", name: "Unknown" },
   };
+};
+
+const hasTrackedBalanceSnapshots = (tx: Transaction) =>
+  tx.previousHTBalance !== undefined &&
+  tx.previousFABalance !== undefined &&
+  tx.previousOFBalance !== undefined &&
+  tx.newHTBalance !== undefined &&
+  tx.newFABalance !== undefined &&
+  tx.newOFBalance !== undefined;
+
+const getTrackedBalanceTotal = (balances: { ht: number; fa: number; of: number }) =>
+  balances.ht + balances.fa + balances.of;
+
+const getTrackedBalanceValue = (
+  tx: Transaction,
+  balances: { ht: number; fa: number; of: number }
+) => {
+  if (tx.affectedBalance === "heatTreatmentBalance") return balances.ht;
+  if (tx.affectedBalance === "factoryBalance") return balances.fa;
+  if (tx.affectedBalance === "officeBalance") return balances.of;
+  return getTrackedBalanceTotal(balances);
+};
+
+const isReplayableBalanceTransaction = (tx: Transaction) => {
+  if (REPLAY_TYPES.includes(tx.type as ReplayTransactionType)) {
+    return tx.type !== "adjustment" || hasTrackedBalanceSnapshots(tx);
+  }
+
+  return false;
+};
+
+const getTransactionBalanceDelta = (tx: Transaction) => {
+  const fallbackQty = Math.max(0, Math.abs(tx.quantityChange || 0));
+
+  return {
+    ht:
+      tx.previousHTBalance !== undefined && tx.newHTBalance !== undefined
+        ? tx.previousHTBalance - tx.newHTBalance
+        : 0,
+    fa:
+      tx.previousFABalance !== undefined && tx.newFABalance !== undefined
+        ? tx.previousFABalance - tx.newFABalance
+        : 0,
+    of:
+      tx.previousOFBalance !== undefined && tx.newOFBalance !== undefined
+        ? tx.previousOFBalance - tx.newOFBalance
+        : fallbackQty,
+  };
+};
+
+const applySalesReverseToCurrentStock = async (
+  context: AdvancedContext,
+  matchingTxs: Transaction[]
+) => {
+  const stockByKey = new Map(
+    context.stockItems.map((item) => [toItemKey(item.name, item.category), item])
+  );
+  const balanceDeltasByItemId = new Map<string, { ht: number; fa: number; of: number }>();
+
+  for (const tx of matchingTxs) {
+    const stockItem = stockByKey.get(toItemKey(tx.itemId, tx.category));
+    if (!stockItem) continue;
+
+    const currentDelta = balanceDeltasByItemId.get(stockItem.id) || { ht: 0, fa: 0, of: 0 };
+    const txDelta = getTransactionBalanceDelta(tx);
+
+    currentDelta.ht += txDelta.ht;
+    currentDelta.fa += txDelta.fa;
+    currentDelta.of += txDelta.of;
+
+    balanceDeltasByItemId.set(stockItem.id, currentDelta);
+  }
+
+  await Promise.all(
+    Array.from(balanceDeltasByItemId.entries()).map(async ([stockItemId, delta]) => {
+      const stockItem = context.stockItems.find((item) => item.id === stockItemId);
+      if (!stockItem) return;
+
+      const nextHTBalance = Math.max(0, (stockItem.heatTreatmentBalance || 0) + delta.ht);
+      const nextFABalance = Math.max(0, (stockItem.factoryBalance || 0) + delta.fa);
+      const nextOFBalance = Math.max(0, (stockItem.officeBalance || 0) + delta.of);
+
+      await updateDoc(doc(db, "stock-items", stockItemId), {
+        heatTreatmentBalance: nextHTBalance,
+        factoryBalance: nextFABalance,
+        officeBalance: nextOFBalance,
+        quantity: nextHTBalance + nextFABalance + nextOFBalance,
+        lastUpdated: Timestamp.now(),
+      });
+    })
+  );
+};
+
+const saveSalesGroupEditDirect = async (
+  input: EditableGroupInput,
+  context: AdvancedContext,
+  existingTxs: Transaction[],
+  stockRows: Array<{ stockItem: StockItem; quantity: number }>
+) => {
+  const now = input.baseTimestamp || Timestamp.now();
+  const stockByKey = new Map(
+    context.stockItems.map((item) => [toItemKey(item.name, item.category), item])
+  );
+  const mutableBalancesByItemId = new Map<
+    string,
+    { ht: number; fa: number; of: number; stockItem: StockItem }
+  >();
+
+  const getMutableBalances = (stockItem: StockItem) => {
+    const existing = mutableBalancesByItemId.get(stockItem.id);
+    if (existing) return existing;
+
+    const created = {
+      ht: stockItem.heatTreatmentBalance || 0,
+      fa: stockItem.factoryBalance || 0,
+      of: stockItem.officeBalance || 0,
+      stockItem,
+    };
+    mutableBalancesByItemId.set(stockItem.id, created);
+    return created;
+  };
+
+  for (const tx of existingTxs) {
+    const stockItem = stockByKey.get(toItemKey(tx.itemId, tx.category));
+    if (!stockItem) continue;
+
+    const balances = getMutableBalances(stockItem);
+    const txDelta = getTransactionBalanceDelta(tx);
+    balances.ht = Math.max(0, balances.ht + txDelta.ht);
+    balances.fa = Math.max(0, balances.fa + txDelta.fa);
+    balances.of = Math.max(0, balances.of + txDelta.of);
+  }
+
+  const existingTxsByKey = new Map<string, Transaction[]>();
+  for (const tx of existingTxs) {
+    const itemKey = toItemKey(tx.itemId, tx.category);
+    const txsForKey = existingTxsByKey.get(itemKey) || [];
+    txsForKey.push(tx);
+    existingTxsByKey.set(itemKey, txsForKey);
+  }
+
+  const touchedStockItemIds = new Set<string>();
+  const matchedExistingTxIds = new Set<string>();
+  const txWrites: Promise<unknown>[] = [];
+
+  for (const row of stockRows) {
+    const itemKey = toItemKey(row.stockItem.name, row.stockItem.category);
+    const existingTxQueue = existingTxsByKey.get(itemKey) || [];
+    const existingTx = existingTxQueue.shift();
+    if (existingTxQueue.length > 0) {
+      existingTxsByKey.set(itemKey, existingTxQueue);
+    } else {
+      existingTxsByKey.delete(itemKey);
+    }
+
+    const balances = getMutableBalances(row.stockItem);
+    if (row.quantity > balances.of) {
+      throw new Error(
+        `Cannot save sale edit for ${row.stockItem.name} (${row.stockItem.category}) because only ${balances.of} office balance is available.`
+      );
+    }
+
+    const before = { ht: balances.ht, fa: balances.fa, of: balances.of };
+    balances.of -= row.quantity;
+    const after = { ht: balances.ht, fa: balances.fa, of: balances.of };
+    touchedStockItemIds.add(row.stockItem.id);
+
+    const payload: Record<string, any> = {
+      itemId: row.stockItem.name,
+      category: row.stockItem.category,
+      company: input.company || row.stockItem.company || "",
+      quantityChange: -row.quantity,
+      businessDate: Timestamp.fromDate(input.businessDate),
+      timestamp: now,
+      type: "sales",
+      edited: true,
+      editedAt: now,
+      user: input.user,
+      notes: input.notes || null,
+      salesCompany: input.salesCompany || null,
+      affectedBalance: "officeBalance",
+      previousBalance: before.of,
+      balance: after.of,
+      locationId: null,
+      previousHTBalance: before.ht,
+      previousFABalance: before.fa,
+      previousOFBalance: before.of,
+      newHTBalance: after.ht,
+      newFABalance: after.fa,
+      newOFBalance: after.of,
+      salesId: input.groupId,
+    };
+
+    if (existingTx) {
+      matchedExistingTxIds.add(existingTx.id);
+      txWrites.push(updateDoc(doc(db, "transactions", existingTx.id), payload));
+    } else {
+      txWrites.push(addDoc(collection(db, "transactions"), payload));
+    }
+  }
+
+  for (const staleTx of existingTxs) {
+    if (!matchedExistingTxIds.has(staleTx.id)) {
+      txWrites.push(deleteDoc(doc(db, "transactions", staleTx.id)));
+      const stockItem = stockByKey.get(toItemKey(staleTx.itemId, staleTx.category));
+      if (stockItem) {
+        touchedStockItemIds.add(stockItem.id);
+      }
+    }
+  }
+
+  const stockWrites = Array.from(touchedStockItemIds).map(async (stockItemId) => {
+    const balances = mutableBalancesByItemId.get(stockItemId);
+    if (!balances) return;
+
+    await updateDoc(doc(db, "stock-items", stockItemId), {
+      heatTreatmentBalance: balances.ht,
+      factoryBalance: balances.fa,
+      officeBalance: balances.of,
+      quantity: balances.ht + balances.fa + balances.of,
+      lastUpdated: Timestamp.now(),
+    });
+  });
+
+  await Promise.all([...txWrites, ...stockWrites]);
 };
 
 export async function loadAdvancedContext(company?: string): Promise<AdvancedContext> {
@@ -542,6 +783,14 @@ export async function saveAdvancedGroupEdit(input: EditableGroupInput) {
       return tx.transferId === input.groupId && tx.type === type;
     })
     .sort(compareAdvancedTransactions);
+  const existingTxsByKey = new Map<string, Transaction[]>();
+
+  for (const tx of existingTxs) {
+    const itemKey = toItemKey(tx.itemId, tx.category);
+    const txsForKey = existingTxsByKey.get(itemKey) || [];
+    txsForKey.push(tx);
+    existingTxsByKey.set(itemKey, txsForKey);
+  }
 
   const now = input.baseTimestamp || Timestamp.now();
   // For HT transactions, use the oldest timestamp (will be older than FA/OF which get offsets)
@@ -555,7 +804,13 @@ export async function saveAdvancedGroupEdit(input: EditableGroupInput) {
     })
     .filter(Boolean) as Array<{ stockItem: StockItem; quantity: number }>;
 
+  if (input.type === "sales") {
+    await saveSalesGroupEditDirect(input, context, existingTxs, stockRows);
+    return;
+  }
+
   const affectedItemKeys = new Set<string>();
+  const matchedExistingTxIds = new Set<string>();
   const updatePromises: Promise<unknown>[] = [];
 
   for (let index = 0; index < stockRows.length; index += 1) {
@@ -563,7 +818,14 @@ export async function saveAdvancedGroupEdit(input: EditableGroupInput) {
     const itemKey = toItemKey(row.stockItem.name, row.stockItem.category);
     affectedItemKeys.add(itemKey);
 
-    const existingTx = existingTxs[index];
+    const existingTxQueue = existingTxsByKey.get(itemKey) || [];
+    const existingTx = existingTxQueue.shift();
+    if (existingTxQueue.length > 0) {
+      existingTxsByKey.set(itemKey, existingTxQueue);
+    } else {
+      existingTxsByKey.delete(itemKey);
+    }
+
     const basePayload: Record<string, any> = {
       itemId: row.stockItem.name,
       category: row.stockItem.category,
@@ -575,7 +837,7 @@ export async function saveAdvancedGroupEdit(input: EditableGroupInput) {
       editedAt: now,
       user: input.user,
       notes: input.notes || null,
-      salesCompany: input.type === "sales" ? input.salesCompany || null : null,
+      salesCompany: null,
       processSerialNumber: input.type === "process" ? input.processSerialNumber || "" : null,
       affectedBalance:
         type === "heat_treatment_created"
@@ -598,13 +860,12 @@ export async function saveAdvancedGroupEdit(input: EditableGroupInput) {
 
     if (input.type === "process") {
       basePayload.processId = input.groupId;
-    } else if (input.type === "sales") {
-      basePayload.salesId = input.groupId;
     } else {
       basePayload.transferId = input.groupId;
     }
 
     if (existingTx) {
+      matchedExistingTxIds.add(existingTx.id);
       // For existing transactions, update with appropriate timestamp
       const updatePayload = { 
         ...basePayload, 
@@ -622,8 +883,10 @@ export async function saveAdvancedGroupEdit(input: EditableGroupInput) {
   }
 
   // Delete stale transactions
-  for (const staleTx of existingTxs.slice(stockRows.length)) {
-    updatePromises.push(deleteDoc(doc(db, "transactions", staleTx.id)));
+  for (const staleTx of existingTxs) {
+    if (!matchedExistingTxIds.has(staleTx.id)) {
+      updatePromises.push(deleteDoc(doc(db, "transactions", staleTx.id)));
+    }
   }
 
   await Promise.all(updatePromises);
@@ -671,6 +934,12 @@ export async function reverseAdvancedGroup(groupType: EditableGroupType, groupId
     affectedItemKeys.add(toItemKey(tx.itemId, tx.category));
   }
 
+  if (groupType === "sales") {
+    await applySalesReverseToCurrentStock(context, matchingTxs);
+    await Promise.all(matchingTxs.map((tx) => deleteDoc(doc(db, "transactions", tx.id))));
+    return;
+  }
+
   // Delete the transactions immediately
   await Promise.all(matchingTxs.map((tx) => deleteDoc(doc(db, "transactions", tx.id))));
 
@@ -687,9 +956,12 @@ export async function recalculateAdvancedStateOptimized(
   affectedItemKeys?: Set<string>
 ) {
   const context = await loadAdvancedContext(company);
-  const advancedTxs = context.transactions
-    .filter((tx) => ADVANCED_TYPES.includes(tx.type as AdvancedTransactionType))
+  const replayTxs = context.transactions
+    .filter(isReplayableBalanceTransaction)
     .sort(compareAdvancedTransactions);
+  const advancedTxs = replayTxs.filter((tx) =>
+    ADVANCED_TYPES.includes(tx.type as AdvancedTransactionType)
+  );
 
   // If specific items are affected, only recalculate those
   const itemsToCheck = affectedItemKeys || new Set<string>();
@@ -700,7 +972,7 @@ export async function recalculateAdvancedStateOptimized(
   const balancesByKey = new Map<string, { ht: number; fa: number; of: number }>();
   const touchedItemKeys = new Set<string>(itemsToCheck);
 
-  for (const tx of advancedTxs) {
+  for (const tx of replayTxs) {
     const itemKey = toItemKey(tx.itemId, tx.category);
 
     // Skip if not affected and we're doing optimized calc
@@ -711,40 +983,66 @@ export async function recalculateAdvancedStateOptimized(
     touchedItemKeys.add(itemKey);
 
     const current = balancesByKey.get(itemKey) || { ht: 0, fa: 0, of: 0 };
-    const requestedQty = Math.max(0, Math.abs(tx.quantityChange || 0));
-    let appliedQty = requestedQty;
-
-    if (tx.type === "factory_transfer_created") {
-      appliedQty = Math.min(requestedQty, current.ht);
-    } else if (tx.type === "office_transfer_created") {
-      appliedQty = Math.min(requestedQty, current.fa);
-    } else if (tx.type === "sales") {
-      appliedQty = Math.min(requestedQty, current.of);
-    }
-
-    if (appliedQty <= 0) {
-      txDeletes.push(tx.id);
-      continue;
-    }
-
     const before = { ...current };
-    if (tx.type === "heat_treatment_created") {
-      current.ht += appliedQty;
-    } else if (tx.type === "factory_transfer_created") {
-      current.ht -= appliedQty;
-      current.fa += appliedQty;
-    } else if (tx.type === "office_transfer_created") {
-      current.fa -= appliedQty;
-      current.of += appliedQty;
-    } else if (tx.type === "sales") {
-      current.of -= appliedQty;
-    }
+    let data: Record<string, any>;
 
-    balancesByKey.set(itemKey, current);
+    if (tx.type === "creation" || tx.type === "adjustment") {
+      const previous = {
+        ht: tx.previousHTBalance || 0,
+        fa: tx.previousFABalance || 0,
+        of: tx.previousOFBalance || 0,
+      };
+      const next = {
+        ht: tx.newHTBalance || 0,
+        fa: tx.newFABalance || 0,
+        of: tx.newOFBalance || 0,
+      };
 
-    txUpdates.push({
-      id: tx.id,
-      data: {
+      current.ht = Math.max(0, current.ht + (next.ht - previous.ht));
+      current.fa = Math.max(0, current.fa + (next.fa - previous.fa));
+      current.of = Math.max(0, current.of + (next.of - previous.of));
+
+      data = {
+        quantityChange: getTrackedBalanceTotal(current) - getTrackedBalanceTotal(before),
+        previousBalance: getTrackedBalanceValue(tx, before),
+        balance: getTrackedBalanceValue(tx, current),
+        previousHTBalance: before.ht,
+        previousFABalance: before.fa,
+        previousOFBalance: before.of,
+        newHTBalance: current.ht,
+        newFABalance: current.fa,
+        newOFBalance: current.of,
+      };
+    } else {
+      const requestedQty = Math.max(0, Math.abs(tx.quantityChange || 0));
+      let appliedQty = requestedQty;
+
+      if (tx.type === "factory_transfer_created") {
+        appliedQty = Math.min(requestedQty, current.ht);
+      } else if (tx.type === "office_transfer_created") {
+        appliedQty = Math.min(requestedQty, current.fa);
+      } else if (tx.type === "sales") {
+        appliedQty = Math.min(requestedQty, current.of);
+      }
+
+      if (appliedQty <= 0) {
+        txDeletes.push(tx.id);
+        continue;
+      }
+
+      if (tx.type === "heat_treatment_created") {
+        current.ht += appliedQty;
+      } else if (tx.type === "factory_transfer_created") {
+        current.ht -= appliedQty;
+        current.fa += appliedQty;
+      } else if (tx.type === "office_transfer_created") {
+        current.fa -= appliedQty;
+        current.of += appliedQty;
+      } else if (tx.type === "sales") {
+        current.of -= appliedQty;
+      }
+
+      data = {
         quantityChange: tx.type === "sales" ? -appliedQty : appliedQty,
         previousBalance:
           tx.type === "heat_treatment_created"
@@ -768,7 +1066,14 @@ export async function recalculateAdvancedStateOptimized(
         newHTBalance: current.ht,
         newFABalance: current.fa,
         newOFBalance: current.of,
-      },
+      };
+    }
+
+    balancesByKey.set(itemKey, current);
+
+    txUpdates.push({
+      id: tx.id,
+      data,
     });
   }
 
@@ -807,236 +1112,5 @@ export async function recalculateAdvancedStateOptimized(
   );
 }
 export async function recalculateAdvancedState(company?: string) {
-  const context = await loadAdvancedContext(company);
-  const advancedTxs = context.transactions
-    .filter((tx) => ADVANCED_TYPES.includes(tx.type as AdvancedTransactionType))
-    .sort(compareAdvancedTransactions);
-
-  const txUpdates: Array<{ id: string; data: Record<string, any> }> = [];
-  const txDeletes: string[] = [];
-  const balancesByKey = new Map<string, { ht: number; fa: number; of: number }>();
-  const touchedItemKeys = new Set<string>();
-
-  for (const tx of advancedTxs) {
-    const itemKey = toItemKey(tx.itemId, tx.category);
-    touchedItemKeys.add(itemKey);
-
-    const current = balancesByKey.get(itemKey) || { ht: 0, fa: 0, of: 0 };
-    const requestedQty = Math.max(0, Math.abs(tx.quantityChange || 0));
-    let appliedQty = requestedQty;
-
-    if (tx.type === "factory_transfer_created") {
-      appliedQty = Math.min(requestedQty, current.ht);
-    } else if (tx.type === "office_transfer_created") {
-      appliedQty = Math.min(requestedQty, current.fa);
-    } else if (tx.type === "sales") {
-      appliedQty = Math.min(requestedQty, current.of);
-    }
-
-    if (appliedQty <= 0) {
-      txDeletes.push(tx.id);
-      continue;
-    }
-
-    const before = { ...current };
-    if (tx.type === "heat_treatment_created") {
-      current.ht += appliedQty;
-    } else if (tx.type === "factory_transfer_created") {
-      current.ht -= appliedQty;
-      current.fa += appliedQty;
-    } else if (tx.type === "office_transfer_created") {
-      current.fa -= appliedQty;
-      current.of += appliedQty;
-    } else if (tx.type === "sales") {
-      current.of -= appliedQty;
-    }
-
-    balancesByKey.set(itemKey, current);
-
-    txUpdates.push({
-      id: tx.id,
-      data: {
-        quantityChange: tx.type === "sales" ? -appliedQty : appliedQty,
-        previousBalance:
-          tx.type === "heat_treatment_created"
-            ? before.ht
-            : tx.type === "factory_transfer_created"
-            ? before.ht
-            : tx.type === "office_transfer_created"
-            ? before.fa
-            : before.of,
-        balance:
-          tx.type === "heat_treatment_created"
-            ? current.ht
-            : tx.type === "factory_transfer_created"
-            ? current.ht
-            : tx.type === "office_transfer_created"
-            ? current.fa
-            : current.of,
-        previousHTBalance: before.ht,
-        previousFABalance: before.fa,
-        previousOFBalance: before.of,
-        newHTBalance: current.ht,
-        newFABalance: current.fa,
-        newOFBalance: current.of,
-      },
-    });
-  }
-
-  // Batch delete transactions in parallel
-  await Promise.all(
-    txDeletes.map((txId) => deleteDoc(doc(db, "transactions", txId)))
-  );
-
-  // Batch update transactions in parallel
-  await Promise.all(
-    txUpdates.map((update) => updateDoc(doc(db, "transactions", update.id), update.data))
-  );
-
-  const stockByKey = new Map(context.stockItems.map((item) => [toItemKey(item.name, item.category), item]));
-  for (const item of context.stockItems) {
-    const currentAdvancedTotal =
-      (item.heatTreatmentBalance || 0) + (item.factoryBalance || 0) + (item.officeBalance || 0);
-    if (currentAdvancedTotal > 0) {
-      touchedItemKeys.add(toItemKey(item.name, item.category));
-    }
-  }
-
-  for (const itemKey of Array.from(touchedItemKeys)) {
-    const stockItem = stockByKey.get(itemKey);
-    if (!stockItem) continue;
-
-    const next = balancesByKey.get(itemKey) || { ht: 0, fa: 0, of: 0 };
-    await updateDoc(doc(db, "stock-items", stockItem.id), {
-      heatTreatmentBalance: next.ht,
-      factoryBalance: next.fa,
-      officeBalance: next.of,
-      quantity: next.ht + next.fa + next.of,
-      lastUpdated: Timestamp.now(),
-    });
-  }
-
-  // Optimize: Filter deleted txs from context instead of reloading
-  const remainingAdvancedTxs = advancedTxs.filter(tx => !txDeletes.includes(tx.id));
-  
-  // Only rebuild process documents if there are heat treatment transactions
-  const htTxs = remainingAdvancedTxs.filter((tx) => tx.type === "heat_treatment_created");
-  const factoryTxs = remainingAdvancedTxs.filter((tx) => tx.type === "factory_transfer_created");
-  
-  if (htTxs.length === 0 && factoryTxs.length === 0) {
-    // Delete all process documents if no HT or FA transactions remain
-    for (const processDoc of context.processDocs) {
-      await deleteDoc(doc(db, "processes", processDoc.id));
-    }
-    return;
-  }
-
-  const htGroups = new Map<
-    string,
-    {
-      serialNumber: string;
-      date: Date;
-      createdAt: Date;
-      createdBy: { id: string; name: string };
-      items: Array<{ itemId: string; itemName: string; category: string; quantity: number }>;
-    }
-  >();
-
-  for (const tx of htTxs) {
-    if (!tx.processId) continue;
-    const group = htGroups.get(tx.processId) || {
-      serialNumber: tx.processSerialNumber || tx.processId,
-      date: tx.businessDate || tx.timestamp,
-      createdAt: tx.timestamp,
-      createdBy: tx.user,
-      items: [],
-    };
-
-    group.items.push({
-      itemId: context.stockItems.find(
-        (item) => toItemKey(item.name, item.category) === toItemKey(tx.itemId, tx.category)
-      )?.id || "",
-      itemName: tx.itemId,
-      category: tx.category,
-      quantity: Math.max(0, tx.quantityChange),
-    });
-    htGroups.set(tx.processId, group);
-  }
-
-  const sortedHtGroups = Array.from(htGroups.entries()).sort((a, b) => {
-    const aTime = a[1].date.getTime();
-    const bTime = b[1].date.getTime();
-    if (aTime !== bTime) return aTime - bTime;
-    return a[1].createdAt.getTime() - b[1].createdAt.getTime();
-  });
-
-  const fifoPools = new Map<
-    string,
-    Array<{ processId: string; remaining: number }>
-  >();
-
-  for (const [processId, group] of sortedHtGroups) {
-    for (const item of group.items) {
-      const key = toItemKey(item.itemName, item.category);
-      const pool = fifoPools.get(key) || [];
-      pool.push({ processId, remaining: item.quantity });
-      fifoPools.set(key, pool);
-    }
-  }
-
-  for (const tx of factoryTxs) {
-    const key = toItemKey(tx.itemId, tx.category);
-    const pool = fifoPools.get(key) || [];
-    let toDeduct = Math.max(0, tx.quantityChange);
-
-    for (const entry of pool) {
-      if (toDeduct <= 0) break;
-      const deducted = Math.min(entry.remaining, toDeduct);
-      entry.remaining -= deducted;
-      toDeduct -= deducted;
-    }
-  }
-
-  const remainingByProcess = new Map<
-    string,
-    Array<{ itemId: string; itemName: string; category: string; quantity: number }>
-  >();
-
-  for (const [processId, group] of sortedHtGroups) {
-    const items: Array<{ itemId: string; itemName: string; category: string; quantity: number }> = [];
-    for (const item of group.items) {
-      const key = toItemKey(item.itemName, item.category);
-      const pool = fifoPools.get(key) || [];
-      const remainingEntry = pool.find((entry) => entry.processId === processId);
-      const remaining = remainingEntry?.remaining || 0;
-      if (remaining > 0) {
-        items.push({ ...item, quantity: remaining });
-      }
-    }
-    remainingByProcess.set(processId, items);
-  }
-
-  const existingProcessIds = new Set(context.processDocs.map((processDoc) => processDoc.id));
-  for (const [processId, group] of sortedHtGroups) {
-    const remainingItems = remainingByProcess.get(processId) || [];
-    if (remainingItems.length === 0) {
-      if (existingProcessIds.has(processId)) {
-        await deleteDoc(doc(db, "processes", processId));
-      }
-      continue;
-    }
-
-    await setDoc(
-      doc(db, "processes", processId),
-      {
-        serialNumber: group.serialNumber,
-        date: Timestamp.fromDate(group.date),
-        processType: "heat_treatment",
-        items: remainingItems,
-        createdAt: Timestamp.fromDate(group.createdAt),
-        createdBy: group.createdBy,
-      },
-      { merge: true }
-    );
-  }
+  await recalculateAdvancedStateOptimized(company);
 }

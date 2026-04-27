@@ -111,8 +111,11 @@ export default function HistoryPage() {
   const [deleteHistoryPassword, setDeleteHistoryPassword] = useState("");
   const { toast } = useToast();
 
+  const normalizeItemKeyPart = (value: string) =>
+    value.trim().replace(/\s+/g, " ").toLowerCase();
+
   const getItemKey = (itemName: string, category: string) =>
-    `${itemName.toLowerCase()}::${category.toLowerCase()}`;
+    `${normalizeItemKeyPart(itemName)}::${normalizeItemKeyPart(category)}`;
 
   const selectAllOnFocus = (event: FocusEvent<HTMLInputElement>) => {
     event.target.select();
@@ -143,8 +146,12 @@ export default function HistoryPage() {
       )
     );
 
-    if (snapshot.empty) return null;
-    return snapshot.docs[0].id;
+    if (!snapshot.empty) return snapshot.docs[0].id;
+
+    return (
+      items.find((item) => getItemKey(item.name, item.category) === getItemKey(itemName, category))?.id ||
+      null
+    );
   };
 
   const openEditDialog = (
@@ -523,7 +530,7 @@ export default function HistoryPage() {
     const newQtys = new Map(
       validRows.map((row) => {
         const item = items.find((i) => i.id === row.id);
-        return [item ? `${item.name.toLowerCase()}::${item.category.toLowerCase()}` : "", parseInt(row.quantity, 10)];
+        return [item ? getItemKey(item.name, item.category) : "", parseInt(row.quantity, 10)];
       })
     );
 
@@ -538,7 +545,7 @@ export default function HistoryPage() {
 
     const currentQtys = new Map<string, number>();
     for (const tx of currentTxs) {
-      const key = `${tx.itemId.toLowerCase()}::${tx.category.toLowerCase()}`;
+      const key = getItemKey(tx.itemId, tx.category);
       const current = currentQtys.get(key) || 0;
       currentQtys.set(key, current + Math.abs(tx.quantityChange || 0));
     }
@@ -577,7 +584,7 @@ export default function HistoryPage() {
           );
           
           for (const tx of mirror.transactions) {
-            const key = `${tx.itemId.toLowerCase()}::${tx.category.toLowerCase()}`;
+            const key = getItemKey(tx.itemId, tx.category);
             const change = changedItems.get(key)?.change || 0;
 
             if (change !== 0) {
