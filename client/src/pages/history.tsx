@@ -154,29 +154,107 @@ export default function HistoryPage() {
     );
   };
 
-  const openEditDialog = (
+  const mapTransactionDoc = (docSnap: any) => {
+    const data = docSnap.data();
+    return {
+      id: docSnap.id,
+      category: data.category,
+      company: data.company,
+      itemId: data.itemId,
+      notes: data.notes,
+      businessDate: data.businessDate?.toDate?.() || undefined,
+      edited: data.edited || false,
+      editedAt: data.editedAt?.toDate?.() || undefined,
+      processSerialNumber: data.processSerialNumber,
+      quantityChange: data.quantityChange || 0,
+      previousBalance: data.previousBalance || 0,
+      balance: data.balance || 0,
+      locationId: data.locationId,
+      timestamp: data.timestamp?.toDate?.() || new Date(),
+      type: data.type || "adjustment",
+      bulkTransactionId: data.bulkTransactionId,
+      processId: data.processId,
+      transferId: data.transferId,
+      salesId: data.salesId,
+      salesCompany: data.salesCompany,
+      affectedBalance: data.affectedBalance,
+      previousHTBalance: data.previousHTBalance,
+      previousFABalance: data.previousFABalance,
+      previousOFBalance: data.previousOFBalance,
+      newHTBalance: data.newHTBalance,
+      newFABalance: data.newFABalance,
+      newOFBalance: data.newOFBalance,
+      historyDeleteOnly: data.historyDeleteOnly || false,
+      manualStockEdit: data.manualStockEdit || false,
+      user: data.user || { id: "", name: "Unknown" },
+    };
+  };
+
+  const fetchGroupTransactions = async (
+    type: EditHistoryState["type"] | "bulk",
+    groupId: string
+  ) => {
+    const constraints: any[] = [];
+
+    if (type === "bulk") {
+      constraints.push(where("bulkTransactionId", "==", groupId));
+    } else if (type === "process") {
+      constraints.push(where("processId", "==", groupId));
+    } else if (type === "sales") {
+      constraints.push(where("salesId", "==", groupId));
+    } else {
+      constraints.push(where("transferId", "==", groupId));
+    }
+
+    const expectedTransferType =
+      type === "factory_transfer"
+        ? "factory_transfer_created"
+        : type === "office_transfer"
+        ? "office_transfer_created"
+        : null;
+
+    const snapshot = await getDocs(query(collection(db, "transactions"), ...constraints));
+    return snapshot.docs
+      .map(mapTransactionDoc)
+      .filter((tx) => !user?.company || tx.company === user.company)
+      .filter((tx) => !expectedTransferType || tx.type === expectedTransferType)
+      .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+  };
+
+  const openEditDialog = async (
     type: EditHistoryState["type"],
     groupId: string,
     txs: any[],
     options?: { title?: string; processSerialNumber?: string }
   ) => {
-    const firstTx = txs[0];
-    if (!firstTx) return;
+    try {
+      const groupTxs = groupId ? await fetchGroupTransactions(type, groupId) : txs;
+      const editTxs = groupTxs.length > 0 ? groupTxs : txs;
+      const firstTx = editTxs[0];
+      if (!firstTx) return;
 
-    setEditState({
-      type,
-      groupId,
-      title: options?.title || "Edit Entry",
-      rows: txs.map((tx) => ({
-        id: getStockItemIdFromTransaction(tx.itemId, tx.category),
-        quantity: `${Math.abs(tx.quantityChange || 0)}`,
-      })),
-      businessDate: toDateInputValue(firstTx.businessDate || firstTx.timestamp),
-      salesCompany: (firstTx.salesCompany || "") as "CEC" | "AGW" | "BRP" | "",
-      remarks: firstTx.notes || "",
-      processSerialNumber: options?.processSerialNumber || firstTx.processSerialNumber || "",
-    });
-    setEditPassword("");
+      setEditState({
+        type,
+        groupId,
+        title: options?.title || "Edit Entry",
+        rows: editTxs.map((tx) => ({
+          id: getStockItemIdFromTransaction(tx.itemId, tx.category),
+          quantity: `${Math.abs(tx.quantityChange || 0)}`,
+        })),
+        businessDate: toDateInputValue(firstTx.businessDate || firstTx.timestamp),
+        salesCompany: (firstTx.salesCompany || "") as "CEC" | "AGW" | "BRP" | "",
+        remarks: firstTx.notes || "",
+        processSerialNumber: options?.processSerialNumber || firstTx.processSerialNumber || "",
+      });
+      setEditPassword("");
+    } catch (error) {
+      console.error("Error loading history entry for edit:", error);
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Failed to load the complete history entry for editing.",
+      });
+    }
   };
 
   const reverseHeatTreatmentProcess = async (processId: string) => {
@@ -336,10 +414,18 @@ export default function HistoryPage() {
     try {
       if (isBulkId) {
         // Check if this is a bulkTransactionId, processId, transferId, or salesId
-        const allBulkTxs = filteredTransactions.filter(tx => tx.bulkTransactionId === idOrBulkId);
-        const allProcessTxs = filteredTransactions.filter(tx => tx.processId === idOrBulkId);
-        const allTransferTxs = filteredTransactions.filter(tx => tx.transferId === idOrBulkId);
-        const allSalesTxs = filteredTransactions.filter(tx => tx.salesId === idOrBulkId);
+        const [allBulkTxs, allProcessTxs, allFactoryTransferTxs, allOfficeTransferTxs, allSalesTxs] =
+          await Promise.all([
+            fetchGroupTransactions("bulk", idOrBulkId),
+            fetchGroupTransactions("process", idOrBulkId),
+            fetchGroupTransactions("factory_transfer", idOrBulkId),
+            fetchGroupTransactions("office_transfer", idOrBulkId),
+            fetchGroupTransactions("sales", idOrBulkId),
+          ]);
+        const allTransferTxs =
+          allFactoryTransferTxs.length > 0 ? allFactoryTransferTxs : allOfficeTransferTxs;
+        const transferType =
+          allFactoryTransferTxs.length > 0 ? "factory_transfer" : "office_transfer";
         
         if (allBulkTxs.length > 0) {
           setDeleteConfirmId({
@@ -363,7 +449,8 @@ export default function HistoryPage() {
             isBulkGroup: true,
             transferId: idOrBulkId,
             itemCount: allTransferTxs.length,
-            type: 'transfer'
+            type: 'transfer',
+            transferType
           });
         } else if (allSalesTxs.length > 0) {
           setDeleteConfirmId({
@@ -380,7 +467,7 @@ export default function HistoryPage() {
         
         if (txById?.bulkTransactionId) {
           // This is part of a bulk transaction group
-          const allBulkTxs = filteredTransactions.filter(tx => tx.bulkTransactionId === txById.bulkTransactionId);
+          const allBulkTxs = await fetchGroupTransactions("bulk", txById.bulkTransactionId);
           
           setDeleteConfirmId({
             id: idOrBulkId,
@@ -391,7 +478,7 @@ export default function HistoryPage() {
           });
         } else if (txById?.processId) {
           // This is part of a process group
-          const allProcessTxs = filteredTransactions.filter(tx => tx.processId === txById.processId);
+          const allProcessTxs = await fetchGroupTransactions("process", txById.processId);
           
           setDeleteConfirmId({
             id: idOrBulkId,
@@ -402,18 +489,21 @@ export default function HistoryPage() {
           });
         } else if (txById?.transferId) {
           // This is part of a transfer group
-          const allTransferTxs = filteredTransactions.filter(tx => tx.transferId === txById.transferId);
+          const transferType =
+            txById.type === "factory_transfer_created" ? "factory_transfer" : "office_transfer";
+          const allTransferTxs = await fetchGroupTransactions(transferType, txById.transferId);
           
           setDeleteConfirmId({
             id: idOrBulkId,
             isBulkGroup: true,
             transferId: txById.transferId,
             itemCount: allTransferTxs.length,
-            type: 'transfer'
+            type: 'transfer',
+            transferType
           });
         } else if (txById?.salesId) {
           // This is part of a sales group
-          const allSalesTxs = filteredTransactions.filter(tx => tx.salesId === txById.salesId);
+          const allSalesTxs = await fetchGroupTransactions("sales", txById.salesId);
           
           setDeleteConfirmId({
             id: idOrBulkId,
@@ -455,12 +545,14 @@ export default function HistoryPage() {
     if (!editState) return;
     if (!validateHistoryPassword(editPassword)) return;
 
-    const validRows = editState.rows.filter((row) => row.id && parseInt(row.quantity) > 0);
-    if (validRows.length === 0) {
+    const validRows = editState.rows.filter((row) => row.id && parseInt(row.quantity, 10) > 0);
+    const hasIncompleteRows = validRows.length !== editState.rows.length;
+
+    if (hasIncompleteRows) {
       toast({
         variant: "destructive",
         title: "Error",
-        description: "Please add at least one valid row.",
+        description: "Every edit row needs an item and quantity. Remove unwanted rows before saving.",
       });
       return;
     }
@@ -534,14 +626,8 @@ export default function HistoryPage() {
       })
     );
 
-    // Get current transactions to calculate quantity changes
-    const currentTxs = transactions.filter(
-      editState.type === "process"
-        ? (tx) => tx.processId === editState.groupId
-        : editState.type === "sales"
-        ? (tx) => tx.salesId === editState.groupId
-        : (tx) => tx.transferId === editState.groupId && tx.type === (editState.type === "factory_transfer" ? "factory_transfer_created" : "office_transfer_created")
-    );
+    // Use the full stored group, not the currently visible history subset.
+    const currentTxs = await fetchGroupTransactions(editState.type, editState.groupId);
 
     const currentQtys = new Map<string, number>();
     for (const tx of currentTxs) {
@@ -639,13 +725,16 @@ export default function HistoryPage() {
         let relevantTxs: any[] = [];
         
         if (deleteConfirmId.type === 'bulk') {
-          relevantTxs = filteredTransactions.filter(tx => tx.bulkTransactionId === deleteConfirmId.bulkTransactionId);
+          relevantTxs = await fetchGroupTransactions("bulk", deleteConfirmId.bulkTransactionId);
         } else if (deleteConfirmId.type === 'process') {
-          relevantTxs = filteredTransactions.filter(tx => tx.processId === deleteConfirmId.processId);
+          relevantTxs = await fetchGroupTransactions("process", deleteConfirmId.processId);
         } else if (deleteConfirmId.type === 'transfer') {
-          relevantTxs = filteredTransactions.filter(tx => tx.transferId === deleteConfirmId.transferId);
+          relevantTxs = await fetchGroupTransactions(
+            deleteConfirmId.transferType || "factory_transfer",
+            deleteConfirmId.transferId
+          );
         } else if (deleteConfirmId.type === 'sales') {
-          relevantTxs = filteredTransactions.filter(tx => tx.salesId === deleteConfirmId.salesId);
+          relevantTxs = await fetchGroupTransactions("sales", deleteConfirmId.salesId);
         }
         
         if (deleteOption === 'reverse' && deleteConfirmId.type === 'process' && deleteConfirmId.processId) {
@@ -675,7 +764,8 @@ export default function HistoryPage() {
         if (deleteOption === 'reverse' && deleteConfirmId.type === 'transfer' && deleteConfirmId.transferId) {
           const transferId = deleteConfirmId.transferId;
           const transferType =
-            relevantTxs[0]?.type === "office_transfer_created" ? "office_transfer" : "factory_transfer";
+            deleteConfirmId.transferType ||
+            (relevantTxs[0]?.type === "office_transfer_created" ? "office_transfer" : "factory_transfer");
           setDeleteConfirmId(null);
           setDeletePassword("");
           await reverseAdvancedGroup(transferType, transferId, user?.company);

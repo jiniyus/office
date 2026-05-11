@@ -9,6 +9,7 @@
     "build": "tsx script/build.ts",
     "start": "set NODE_ENV=production && node dist/index.cjs",
     "check": "tsc",
+    "test:history": "tsx script/advanced-history-replay.test.ts",
     "db:push": "drizzle-kit push"
   },
   "dependencies": {

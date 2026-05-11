@@ -76,6 +76,22 @@ interface AdvancedContext {
   processDocs: ProcessDocData[];
 }
 
+export interface AdvancedTransactionAuditRow {
+  id: string;
+  type: string;
+  itemId: string;
+  category: string;
+  quantityChange: number;
+  timestamp: Date;
+  businessDate?: Date;
+  before: { ht: number; fa: number; of: number };
+  after: { ht: number; fa: number; of: number };
+  previousBalance: number;
+  balance: number;
+  notes?: string;
+  groupId?: string;
+}
+
 const ADVANCED_TYPES: AdvancedTransactionType[] = [
   "heat_treatment_created",
   "factory_transfer_created",
@@ -117,11 +133,16 @@ const toJsDate = (value?: Date | Timestamp | null) => {
   return value instanceof Timestamp ? value.toDate() : value;
 };
 
-const getEffectiveTime = (tx: Transaction) =>
-  (tx.businessDate || tx.timestamp || new Date(0)).getTime();
+const getStartOfLocalDayTime = (date?: Date) => {
+  if (!date) return new Date(0).getTime();
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+};
+
+const getEffectiveDayTime = (tx: Transaction) =>
+  getStartOfLocalDayTime(tx.businessDate || tx.timestamp);
 
 const compareAdvancedTransactions = (a: Transaction, b: Transaction) => {
-  const dateCompare = getEffectiveTime(a) - getEffectiveTime(b);
+  const dateCompare = getEffectiveDayTime(a) - getEffectiveDayTime(b);
   if (dateCompare !== 0) return dateCompare;
 
   const timeCompare = a.timestamp.getTime() - b.timestamp.getTime();
@@ -364,7 +385,12 @@ const saveSalesGroupEditDirect = async (
 
     if (existingTx) {
       matchedExistingTxIds.add(existingTx.id);
-      txWrites.push(updateDoc(doc(db, "transactions", existingTx.id), payload));
+      txWrites.push(
+        updateDoc(doc(db, "transactions", existingTx.id), {
+          ...payload,
+          timestamp: Timestamp.fromDate(existingTx.timestamp),
+        })
+      );
     } else {
       txWrites.push(addDoc(collection(db, "transactions"), payload));
     }
@@ -866,10 +892,49 @@ export async function saveAdvancedGroupEdit(input: EditableGroupInput) {
 
     if (existingTx) {
       matchedExistingTxIds.add(existingTx.id);
-      // For existing transactions, update with appropriate timestamp
+      const existingTimestamp = Timestamp.fromDate(existingTx.timestamp);
+      const before = {
+        ht: existingTx.previousHTBalance ?? 0,
+        fa: existingTx.previousFABalance ?? 0,
+        of: existingTx.previousOFBalance ?? 0,
+      };
+      const after = { ...before };
+      if (type === "heat_treatment_created") {
+        after.ht += row.quantity;
+      } else if (type === "factory_transfer_created") {
+        after.ht -= row.quantity;
+        after.fa += row.quantity;
+      } else if (type === "office_transfer_created") {
+        after.fa -= row.quantity;
+        after.of += row.quantity;
+      }
+      const trackedBefore =
+        type === "heat_treatment_created"
+          ? before.ht
+          : type === "factory_transfer_created"
+          ? before.ht
+          : type === "office_transfer_created"
+          ? before.fa
+          : before.of;
+      const trackedAfter =
+        type === "heat_treatment_created"
+          ? after.ht
+          : type === "factory_transfer_created"
+          ? after.ht
+          : type === "office_transfer_created"
+          ? after.fa
+          : after.of;
       const updatePayload = { 
         ...basePayload, 
-        timestamp: type === "heat_treatment_created" ? htTimestamp : now 
+        timestamp: existingTimestamp,
+        previousBalance: trackedBefore,
+        balance: trackedAfter,
+        previousHTBalance: before.ht,
+        previousFABalance: before.fa,
+        previousOFBalance: before.of,
+        newHTBalance: after.ht,
+        newFABalance: after.fa,
+        newOFBalance: after.of,
       };
       updatePromises.push(updateDoc(doc(db, "transactions", existingTx.id), updatePayload));
     } else {
@@ -885,6 +950,7 @@ export async function saveAdvancedGroupEdit(input: EditableGroupInput) {
   // Delete stale transactions
   for (const staleTx of existingTxs) {
     if (!matchedExistingTxIds.has(staleTx.id)) {
+      affectedItemKeys.add(toItemKey(staleTx.itemId, staleTx.category));
       updatePromises.push(deleteDoc(doc(db, "transactions", staleTx.id)));
     }
   }
@@ -968,7 +1034,7 @@ export async function recalculateAdvancedStateOptimized(
   const shouldFullRecalc = itemsToCheck.size === 0;
 
   const txUpdates: Array<{ id: string; data: Record<string, any> }> = [];
-  const txDeletes: string[] = [];
+  const deletedTxIds: string[] = [];
   const balancesByKey = new Map<string, { ht: number; fa: number; of: number }>();
   const touchedItemKeys = new Set<string>(itemsToCheck);
 
@@ -987,20 +1053,15 @@ export async function recalculateAdvancedStateOptimized(
     let data: Record<string, any>;
 
     if (tx.type === "creation" || tx.type === "adjustment") {
-      const previous = {
-        ht: tx.previousHTBalance || 0,
-        fa: tx.previousFABalance || 0,
-        of: tx.previousOFBalance || 0,
-      };
       const next = {
         ht: tx.newHTBalance || 0,
         fa: tx.newFABalance || 0,
         of: tx.newOFBalance || 0,
       };
 
-      current.ht = Math.max(0, current.ht + (next.ht - previous.ht));
-      current.fa = Math.max(0, current.fa + (next.fa - previous.fa));
-      current.of = Math.max(0, current.of + (next.of - previous.of));
+      current.ht = next.ht;
+      current.fa = next.fa;
+      current.of = next.of;
 
       data = {
         quantityChange: getTrackedBalanceTotal(current) - getTrackedBalanceTotal(before),
@@ -1014,21 +1075,7 @@ export async function recalculateAdvancedStateOptimized(
         newOFBalance: current.of,
       };
     } else {
-      const requestedQty = Math.max(0, Math.abs(tx.quantityChange || 0));
-      let appliedQty = requestedQty;
-
-      if (tx.type === "factory_transfer_created") {
-        appliedQty = Math.min(requestedQty, current.ht);
-      } else if (tx.type === "office_transfer_created") {
-        appliedQty = Math.min(requestedQty, current.fa);
-      } else if (tx.type === "sales") {
-        appliedQty = Math.min(requestedQty, current.of);
-      }
-
-      if (appliedQty <= 0) {
-        txDeletes.push(tx.id);
-        continue;
-      }
+      const appliedQty = Math.max(0, Math.abs(tx.quantityChange || 0));
 
       if (tx.type === "heat_treatment_created") {
         current.ht += appliedQty;
@@ -1077,9 +1124,6 @@ export async function recalculateAdvancedStateOptimized(
     });
   }
 
-  // Batch delete transactions in parallel
-  await Promise.all(txDeletes.map((txId) => deleteDoc(doc(db, "transactions", txId))));
-
   // Batch update transactions in parallel
   await Promise.all(
     txUpdates.map((update) => updateDoc(doc(db, "transactions", update.id), update.data))
@@ -1107,10 +1151,73 @@ export async function recalculateAdvancedStateOptimized(
   await rebuildHeatTreatmentProcessDocs(
     context,
     advancedTxs,
-    txDeletes,
+    deletedTxIds,
     shouldFullRecalc ? undefined : touchedItemKeys
   );
 }
 export async function recalculateAdvancedState(company?: string) {
   await recalculateAdvancedStateOptimized(company);
+}
+
+export async function getAdvancedTransactionAudit(
+  company?: string,
+  itemName?: string,
+  category?: string
+): Promise<AdvancedTransactionAuditRow[]> {
+  const context = await loadAdvancedContext(company);
+  const targetKey = itemName && category ? toItemKey(itemName, category) : null;
+  const replayTxs = context.transactions
+    .filter(isReplayableBalanceTransaction)
+    .filter((tx) => !targetKey || toItemKey(tx.itemId, tx.category) === targetKey)
+    .sort(compareAdvancedTransactions);
+
+  const balancesByKey = new Map<string, { ht: number; fa: number; of: number }>();
+  const rows: AdvancedTransactionAuditRow[] = [];
+
+  for (const tx of replayTxs) {
+    const itemKey = toItemKey(tx.itemId, tx.category);
+    const current = balancesByKey.get(itemKey) || { ht: 0, fa: 0, of: 0 };
+    const before = { ...current };
+
+    if (tx.type === "creation" || tx.type === "adjustment") {
+      current.ht = tx.newHTBalance || 0;
+      current.fa = tx.newFABalance || 0;
+      current.of = tx.newOFBalance || 0;
+    } else {
+      const appliedQty = Math.max(0, Math.abs(tx.quantityChange || 0));
+
+      if (tx.type === "heat_treatment_created") {
+        current.ht += appliedQty;
+      } else if (tx.type === "factory_transfer_created") {
+        current.ht -= appliedQty;
+        current.fa += appliedQty;
+      } else if (tx.type === "office_transfer_created") {
+        current.fa -= appliedQty;
+        current.of += appliedQty;
+      } else if (tx.type === "sales") {
+        current.of -= appliedQty;
+      }
+    }
+
+    const after = { ...current };
+    rows.push({
+      id: tx.id,
+      type: tx.type,
+      itemId: tx.itemId,
+      category: tx.category,
+      quantityChange: tx.quantityChange || 0,
+      timestamp: tx.timestamp,
+      businessDate: tx.businessDate,
+      before,
+      after,
+      previousBalance: getTrackedBalanceValue(tx, before),
+      balance: getTrackedBalanceValue(tx, after),
+      notes: tx.notes,
+      groupId: tx.bulkTransactionId || tx.processId || tx.transferId || tx.salesId,
+    });
+
+    balancesByKey.set(itemKey, current);
+  }
+
+  return rows;
 }
