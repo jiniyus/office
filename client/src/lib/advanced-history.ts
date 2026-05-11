@@ -509,6 +509,46 @@ const areTransactionsMirrors = (srcTxs: Transaction[], targetTxs: Transaction[])
   return true;
 };
 
+const assertNoNegativeBalances = (txs: Transaction[], itemKeysToCheck: Set<string>) => {
+  const balancesByKey = new Map<string, { ht: number; fa: number; of: number }>();
+
+  for (const tx of txs.filter(isReplayableBalanceTransaction).sort(compareAdvancedTransactions)) {
+    const itemKey = toItemKey(tx.itemId, tx.category);
+    const current = balancesByKey.get(itemKey) || { ht: 0, fa: 0, of: 0 };
+
+    if (tx.type === "creation" || tx.type === "adjustment") {
+      current.ht = tx.newHTBalance || 0;
+      current.fa = tx.newFABalance || 0;
+      current.of = tx.newOFBalance || 0;
+    } else {
+      const appliedQty = Math.max(0, Math.abs(tx.quantityChange || 0));
+
+      if (tx.type === "heat_treatment_created") {
+        current.ht += appliedQty;
+      } else if (tx.type === "factory_transfer_created") {
+        current.ht -= appliedQty;
+        current.fa += appliedQty;
+      } else if (tx.type === "office_transfer_created") {
+        current.fa -= appliedQty;
+        current.of += appliedQty;
+      } else if (tx.type === "sales") {
+        current.of -= appliedQty;
+      }
+    }
+
+    balancesByKey.set(itemKey, current);
+
+    if (
+      itemKeysToCheck.has(itemKey) &&
+      (current.ht < 0 || current.fa < 0 || current.of < 0)
+    ) {
+      throw new Error(
+        `Cannot save because ${tx.itemId} (${tx.category}) would have a negative balance.`
+      );
+    }
+  }
+};
+
 async function rebuildHeatTreatmentProcessDocs(
   context: AdvancedContext,
   advancedTxs: Transaction[],
@@ -799,6 +839,15 @@ export async function findMirrorFollowUps(
 }
 
 export async function saveAdvancedGroupEdit(input: EditableGroupInput) {
+  const seenStockItemIds = new Set<string>();
+  for (const row of input.rows) {
+    if (!row.stockItemId) continue;
+    if (seenStockItemIds.has(row.stockItemId)) {
+      throw new Error("Duplicate items are not allowed in the same history entry.");
+    }
+    seenStockItemIds.add(row.stockItemId);
+  }
+
   const context = await loadAdvancedContext(input.company);
   const stockById = new Map(context.stockItems.map((item) => [item.id, item]));
   const type = toGroupType(input.type);
@@ -830,12 +879,63 @@ export async function saveAdvancedGroupEdit(input: EditableGroupInput) {
     })
     .filter(Boolean) as Array<{ stockItem: StockItem; quantity: number }>;
 
+  if (stockRows.length !== input.rows.length) {
+    throw new Error("Cannot save because one or more selected items no longer exist.");
+  }
+
   if (input.type === "sales") {
     await saveSalesGroupEditDirect(input, context, existingTxs, stockRows);
     return;
   }
 
   const affectedItemKeys = new Set<string>();
+  const proposedExistingTxsByKey = new Map<string, Transaction[]>();
+
+  for (const tx of existingTxs) {
+    const itemKey = toItemKey(tx.itemId, tx.category);
+    const txsForKey = proposedExistingTxsByKey.get(itemKey) || [];
+    txsForKey.push(tx);
+    proposedExistingTxsByKey.set(itemKey, txsForKey);
+  }
+
+  const proposedTxs = stockRows.map((row, index) => {
+    const itemKey = toItemKey(row.stockItem.name, row.stockItem.category);
+    affectedItemKeys.add(itemKey);
+
+    const existingTxQueue = proposedExistingTxsByKey.get(itemKey) || [];
+    const existingTx = existingTxQueue.shift();
+    if (existingTxQueue.length > 0) {
+      proposedExistingTxsByKey.set(itemKey, existingTxQueue);
+    } else {
+      proposedExistingTxsByKey.delete(itemKey);
+    }
+
+    return {
+      id: existingTx?.id || `proposed-${input.groupId}-${index}`,
+      itemId: row.stockItem.name,
+      category: row.stockItem.category,
+      company: input.company || row.stockItem.company || "",
+      quantityChange: row.quantity,
+      previousBalance: 0,
+      balance: 0,
+      timestamp: existingTx?.timestamp || (type === "heat_treatment_created" ? htTimestamp.toDate() : now.toDate()),
+      businessDate: input.businessDate,
+      type,
+      processId: input.type === "process" ? input.groupId : undefined,
+      transferId: input.type === "process" ? undefined : input.groupId,
+      user: input.user,
+    } as Transaction;
+  });
+
+  const existingTxIds = new Set(existingTxs.map((tx) => tx.id));
+  assertNoNegativeBalances(
+    [
+      ...context.transactions.filter((tx) => !existingTxIds.has(tx.id)),
+      ...proposedTxs,
+    ],
+    affectedItemKeys
+  );
+
   const matchedExistingTxIds = new Set<string>();
   const updatePromises: Promise<unknown>[] = [];
 

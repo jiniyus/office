@@ -116,6 +116,26 @@ export default function ProcessPage() {
     });
   };
 
+  const getDuplicateItemRowsMessage = (rows: ProcessRow[]) => {
+    const firstRowByItemId = new Map<string, number>();
+
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index];
+      if (!row.id) continue;
+
+      const firstRow = firstRowByItemId.get(row.id);
+      if (firstRow !== undefined) {
+        const item = items.find((stockItem) => stockItem.id === row.id);
+        const label = item ? `${capitalize(item.name)} - ${capitalize(item.category)}` : row.id;
+        return `${label} is selected in rows ${firstRow + 1} and ${index + 1}. Each item can only appear once.`;
+      }
+
+      firstRowByItemId.set(row.id, index);
+    }
+
+    return null;
+  };
+
   // Load processes from Firestore on component mount with real-time updates
   useEffect(() => {
     try {
@@ -206,6 +226,25 @@ export default function ProcessPage() {
         });
         return;
       }
+      const item = items.find(it => it.id === row.id);
+      if (!item) {
+        toast({
+          variant: "destructive",
+          title: "Error",
+          description: `Row ${i + 1}: Invalid item`,
+        });
+        return;
+      }
+    }
+
+    const duplicateMessage = getDuplicateItemRowsMessage(processItems);
+    if (duplicateMessage) {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: duplicateMessage,
+      });
+      return;
     }
 
     try {
@@ -540,7 +579,14 @@ export default function ProcessPage() {
         return;
       }
       const item = items.find(it => it.id === row.id);
-      if (!item) continue;
+      if (!item) {
+        toast({
+          variant: "destructive",
+          title: "Error",
+          description: `Row ${i + 1}: Invalid item`,
+        });
+        return;
+      }
       const htBalance = (item as any).heatTreatmentBalance || 0;
       if (qty > htBalance) {
         toast({
@@ -550,6 +596,16 @@ export default function ProcessPage() {
         });
         return;
       }
+    }
+
+    const duplicateMessage = getDuplicateItemRowsMessage(factoryTransferRows);
+    if (duplicateMessage) {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: duplicateMessage,
+      });
+      return;
     }
 
     try {
@@ -700,7 +756,14 @@ export default function ProcessPage() {
         return;
       }
       const item = items.find(it => it.id === row.id);
-      if (!item) continue;
+      if (!item) {
+        toast({
+          variant: "destructive",
+          title: "Error",
+          description: `Row ${i + 1}: Invalid item`,
+        });
+        return;
+      }
       const faBalance = (item as any).factoryBalance || 0;
       if (qty > faBalance) {
         toast({
@@ -710,6 +773,16 @@ export default function ProcessPage() {
         });
         return;
       }
+    }
+
+    const duplicateMessage = getDuplicateItemRowsMessage(officeTransferRows);
+    if (duplicateMessage) {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: duplicateMessage,
+      });
+      return;
     }
 
     try {

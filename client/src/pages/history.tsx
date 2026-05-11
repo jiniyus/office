@@ -117,6 +117,26 @@ export default function HistoryPage() {
   const getItemKey = (itemName: string, category: string) =>
     `${normalizeItemKeyPart(itemName)}::${normalizeItemKeyPart(category)}`;
 
+  const getDuplicateEditRowMessage = (rows: EditHistoryRow[]) => {
+    const firstRowByItemId = new Map<string, number>();
+
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index];
+      if (!row.id) continue;
+
+      const firstRow = firstRowByItemId.get(row.id);
+      if (firstRow !== undefined) {
+        const item = items.find((stockItem) => stockItem.id === row.id);
+        const label = item ? `${capitalize(item.name)} - ${capitalize(item.category)}` : row.id;
+        return `${label} is selected in rows ${firstRow + 1} and ${index + 1}. Each item can only appear once.`;
+      }
+
+      firstRowByItemId.set(row.id, index);
+    }
+
+    return null;
+  };
+
   const selectAllOnFocus = (event: FocusEvent<HTMLInputElement>) => {
     event.target.select();
   };
@@ -557,6 +577,16 @@ export default function HistoryPage() {
       return;
     }
 
+    const duplicateMessage = getDuplicateEditRowMessage(validRows);
+    if (duplicateMessage) {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: duplicateMessage,
+      });
+      return;
+    }
+
     try {
       setIsEditSubmitting(true);
 
@@ -603,10 +633,11 @@ export default function HistoryPage() {
       setEditPassword("");
     } catch (error) {
       console.error("Error editing history entry:", error);
+      const description = error instanceof Error ? error.message : "Failed to update history entry";
       toast({
         variant: "destructive",
         title: "Error",
-        description: "Failed to update history entry",
+        description,
       });
     } finally {
       setIsEditSubmitting(false);

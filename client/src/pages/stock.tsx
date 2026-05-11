@@ -155,6 +155,26 @@ export default function Stock() {
     });
   };
 
+  const getDuplicateItemRowsMessage = (rows: Array<{ id: string }>) => {
+    const firstRowByItemId = new Map<string, number>();
+
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index];
+      if (!row.id) continue;
+
+      const firstRow = firstRowByItemId.get(row.id);
+      if (firstRow !== undefined) {
+        const item = items.find((stockItem) => stockItem.id === row.id);
+        const label = item ? `${capitalize(item.name)} - ${capitalize(item.category)}` : row.id;
+        return `${label} is selected in rows ${firstRow + 1} and ${index + 1}. Each item can only appear once.`;
+      }
+
+      firstRowByItemId.set(row.id, index);
+    }
+
+    return null;
+  };
+
   const categories = useMemo(() => {
     const cats = Array.from(new Set(items.map(item => item.category)));
     return cats.sort();
@@ -643,6 +663,16 @@ export default function Stock() {
 
     if (salesRows.length === 0) {
       toast({ variant: "destructive", title: "Error", description: "Please add at least one item to sell" });
+      return;
+    }
+
+    const duplicateMessage = getDuplicateItemRowsMessage(salesRows);
+    if (duplicateMessage) {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: duplicateMessage,
+      });
       return;
     }
 
