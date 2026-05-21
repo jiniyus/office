@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { useStockItems } from "@/lib/firestore-hooks";
+import type { StockItem } from "@/lib/types";
 import {
   getAdvancedTransactionAudit,
   recalculateAdvancedState,
@@ -14,11 +15,171 @@ import {
 } from "@/lib/advanced-history";
 import { useEffect, useMemo, useState } from "react";
 import { format } from "date-fns";
-import { ChevronDown, Wrench, Search } from "lucide-react";
+import { ChevronDown, Wrench, Search, FileText } from "lucide-react";
+
+const PDF_PAGE_WIDTH = 595;
+const PDF_PAGE_HEIGHT = 842;
+const PDF_MARGIN = 42;
+const PDF_ROW_HEIGHT = 13;
+const PDF_TABLE_COLUMNS = [
+  { label: "Name", x: PDF_MARGIN, width: 150, maxLength: 22 },
+  { label: "Category", x: PDF_MARGIN + 150, width: 130, maxLength: 18 },
+  { label: "HT", x: PDF_MARGIN + 280, width: 45, maxLength: 8 },
+  { label: "Factory", x: PDF_MARGIN + 325, width: 65, maxLength: 10 },
+  { label: "Office", x: PDF_MARGIN + 390, width: 65, maxLength: 10 },
+  { label: "Total", x: PDF_MARGIN + 455, width: 56, maxLength: 10 },
+];
+const PDF_TABLE_RIGHT = PDF_TABLE_COLUMNS[PDF_TABLE_COLUMNS.length - 1].x + PDF_TABLE_COLUMNS[PDF_TABLE_COLUMNS.length - 1].width;
+
+const escapePdfText = (value: string) =>
+  value
+    .replace(/[^\x20-\x7E]/g, "?")
+    .replace(/\\/g, "\\\\")
+    .replace(/\(/g, "\\(")
+    .replace(/\)/g, "\\)");
+
+const fitPdfText = (value: string, maxLength: number) => {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxLength - 3))}...`;
+};
+
+const addPdfText = (lines: string[], text: string, x: number, y: number, size = 10, bold = false) => {
+  const font = bold ? "/F2" : "/F1";
+  lines.push(`BT 0 0 0 rg ${font} ${size} Tf ${x} ${y} Td (${escapePdfText(text)}) Tj ET`);
+};
+
+const addPdfLine = (lines: string[], x1: number, y1: number, x2: number, y2: number) => {
+  lines.push(`0 0 0 RG ${x1} ${y1} m ${x2} ${y2} l S`);
+};
+
+const addPdfRect = (lines: string[], x: number, y: number, width: number, height: number, fillColor: string) => {
+  lines.push(`${fillColor} rg ${x} ${y} ${width} ${height} re f`);
+};
+
+const addPdfTableRow = (lines: string[], topY: number, values: string[], bold = false) => {
+  const bottomY = topY - PDF_ROW_HEIGHT;
+  addPdfLine(lines, PDF_MARGIN, topY, PDF_TABLE_RIGHT, topY);
+  addPdfLine(lines, PDF_MARGIN, bottomY, PDF_TABLE_RIGHT, bottomY);
+
+  PDF_TABLE_COLUMNS.forEach((column) => {
+    addPdfLine(lines, column.x, bottomY, column.x, topY);
+  });
+  addPdfLine(lines, PDF_TABLE_RIGHT, bottomY, PDF_TABLE_RIGHT, topY);
+
+  PDF_TABLE_COLUMNS.forEach((column, index) => {
+    addPdfText(lines, fitPdfText(values[index] || "", column.maxLength), column.x + 4, topY - 9, 9, bold);
+  });
+};
+
+const buildStockBalancePdf = (items: StockItem[], createdAt: Date, company?: string) => {
+  const sortedItems = [...items].sort((a, b) => {
+    const nameCompare = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+    if (nameCompare !== 0) return nameCompare;
+    return a.category.localeCompare(b.category, undefined, { numeric: true, sensitivity: "base" });
+  });
+
+  const createdLabel = format(createdAt, "MMM dd, yyyy HH:mm:ss");
+  const pages: string[] = [];
+  let pageLines: string[] = [];
+  let y = PDF_PAGE_HEIGHT - PDF_MARGIN;
+  let pageNumber = 1;
+
+  const startPage = () => {
+    pageLines = [];
+    y = PDF_PAGE_HEIGHT - PDF_MARGIN;
+    addPdfText(pageLines, "Stock Balance Report", PDF_MARGIN, y, 18, true);
+    y -= 26;
+    addPdfText(pageLines, `Created: ${createdLabel}`, PDF_MARGIN, y, 9, true);
+    y -= 12;
+    if (company) {
+      addPdfText(pageLines, `Company: ${company}`, PDF_MARGIN, y, 9, true);
+      y -= 12;
+    }
+    addPdfText(pageLines, `Items: ${sortedItems.length}`, PDF_MARGIN, y, 9, true);
+    addPdfText(pageLines, `Page ${pageNumber}`, PDF_PAGE_WIDTH - 90, y, 9, true);
+    y -= 16;
+    
+    addPdfTableRow(
+      pageLines,
+      y,
+      PDF_TABLE_COLUMNS.map((column) => column.label),
+      true
+    );
+    y -= PDF_ROW_HEIGHT;
+  };
+
+  const finishPage = () => {
+    pages.push(pageLines.join("\n"));
+    pageNumber += 1;
+  };
+
+  startPage();
+
+  if (sortedItems.length === 0) {
+    addPdfText(pageLines, "No stock items found.", PDF_MARGIN, y, 10);
+  }
+
+  sortedItems.forEach((item) => {
+    if (y - PDF_ROW_HEIGHT < PDF_MARGIN) {
+      finishPage();
+      startPage();
+    }
+
+    const ht = item.heatTreatmentBalance || 0;
+    const factory = item.factoryBalance || 0;
+    const office = item.officeBalance || 0;
+    const total = ht + factory + office;
+
+    addPdfTableRow(pageLines, y, [
+      item.name,
+      item.category,
+      String(ht),
+      String(factory),
+      String(office),
+      String(total),
+    ]);
+    y -= PDF_ROW_HEIGHT;
+  });
+
+  finishPage();
+
+  const objects: string[] = [];
+  const pageRefs = pages.map((_, index) => `${5 + index * 2} 0 R`).join(" ");
+  objects[1] = "<< /Type /Catalog /Pages 2 0 R >>";
+  objects[2] = `<< /Type /Pages /Kids [${pageRefs}] /Count ${pages.length} >>`;
+  objects[3] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+  objects[4] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>";
+
+  pages.forEach((content, index) => {
+    const pageObjectId = 5 + index * 2;
+    const contentObjectId = pageObjectId + 1;
+    objects[pageObjectId] =
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${PDF_PAGE_WIDTH} ${PDF_PAGE_HEIGHT}] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents ${contentObjectId} 0 R >>`;
+    objects[contentObjectId] = `<< /Length ${content.length} >>\nstream\n${content}\nendstream`;
+  });
+
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+
+  for (let index = 1; index < objects.length; index += 1) {
+    offsets[index] = pdf.length;
+    pdf += `${index} 0 obj\n${objects[index]}\nendobj\n`;
+  }
+
+  const xrefOffset = pdf.length;
+  pdf += `xref\n0 ${objects.length}\n0000000000 65535 f \n`;
+  for (let index = 1; index < objects.length; index += 1) {
+    pdf += `${offsets[index].toString().padStart(10, "0")} 00000 n \n`;
+  }
+  pdf += `trailer\n<< /Size ${objects.length} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+
+  return new Blob([pdf], { type: "application/pdf" });
+};
 
 export default function Profile() {
   const { user } = useAuth();
-  const { items } = useStockItems();
+  const { items, loading: isLoadingStockItems } = useStockItems();
   const { toast } = useToast();
   const [adminPassword, setAdminPassword] = useState("");
   const [selectedAuditItemId, setSelectedAuditItemId] = useState("");
@@ -116,6 +277,32 @@ export default function Profile() {
     }
   };
 
+  const handleDownloadStockBalancePdf = () => {
+    try {
+      const createdAt = new Date();
+      const pdfBlob = buildStockBalancePdf(items, createdAt, user?.company);
+      const url = URL.createObjectURL(pdfBlob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `stock-balances-${format(createdAt, "yyyy-MM-dd-HHmm")}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      toast({
+        title: "PDF created",
+        description: "The current stock balance report has been downloaded.",
+      });
+    } catch (error) {
+      console.error("Error creating stock balance PDF:", error);
+      toast({
+        variant: "destructive",
+        title: "PDF failed",
+        description: "Could not create the stock balance report.",
+      });
+    }
+  };
+
   const formatDateTime = (date?: Date) => (date ? format(date, "MMM dd, yyyy HH:mm:ss") : "-");
   const formatBalances = (balances: { ht: number; fa: number; of: number }) =>
     `HT ${balances.ht} / FA ${balances.fa} / OF ${balances.of}`;
@@ -151,6 +338,22 @@ export default function Profile() {
                   </div>
                 </div>
               </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Stock Balance PDF</CardTitle>
+              <CardDescription>Download a simple report of current balances across all locations.</CardDescription>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-sm text-slate-500">
+                Includes item name, category, heat treatment, factory, office, and total stock.
+              </p>
+              <Button onClick={handleDownloadStockBalancePdf} disabled={isLoadingStockItems}>
+                <FileText className="mr-2 h-4 w-4" />
+                {isLoadingStockItems ? "Loading Stock..." : "Download PDF"}
+              </Button>
             </CardContent>
           </Card>
 
