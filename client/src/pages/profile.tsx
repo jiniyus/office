@@ -30,6 +30,8 @@ const PDF_TABLE_COLUMNS = [
   { label: "Total", x: PDF_MARGIN + 455, width: 56, maxLength: 10 },
 ];
 const PDF_TABLE_RIGHT = PDF_TABLE_COLUMNS[PDF_TABLE_COLUMNS.length - 1].x + PDF_TABLE_COLUMNS[PDF_TABLE_COLUMNS.length - 1].width;
+const PDF_ZERO_PARTIAL_FILL = "1 0.96 0.56";
+const PDF_ZERO_ALL_FILL = "1 0.78 0.78";
 
 const escapePdfText = (value: string) =>
   value
@@ -57,8 +59,12 @@ const addPdfRect = (lines: string[], x: number, y: number, width: number, height
   lines.push(`${fillColor} rg ${x} ${y} ${width} ${height} re f`);
 };
 
-const addPdfTableRow = (lines: string[], topY: number, values: string[], bold = false) => {
+const addPdfTableRow = (lines: string[], topY: number, values: string[], bold = false, fillColor?: string) => {
   const bottomY = topY - PDF_ROW_HEIGHT;
+  if (fillColor) {
+    addPdfRect(lines, PDF_MARGIN, bottomY, PDF_TABLE_RIGHT - PDF_MARGIN, PDF_ROW_HEIGHT, fillColor);
+  }
+
   addPdfLine(lines, PDF_MARGIN, topY, PDF_TABLE_RIGHT, topY);
   addPdfLine(lines, PDF_MARGIN, bottomY, PDF_TABLE_RIGHT, bottomY);
 
@@ -98,6 +104,11 @@ const buildStockBalancePdf = (items: StockItem[], createdAt: Date, company?: str
     }
     addPdfText(pageLines, `Items: ${sortedItems.length}`, PDF_MARGIN, y, 9, true);
     addPdfText(pageLines, `Page ${pageNumber}`, PDF_PAGE_WIDTH - 90, y, 9, true);
+    y -= 14;
+    addPdfRect(pageLines, PDF_MARGIN, y - 8, 8, 8, PDF_ZERO_PARTIAL_FILL);
+    addPdfText(pageLines, "One or more location balances are zero", PDF_MARGIN + 12, y - 7, 8);
+    addPdfRect(pageLines, 290, y - 8, 8, 8, PDF_ZERO_ALL_FILL);
+    addPdfText(pageLines, "All location balances are zero", 302, y - 7, 8);
     y -= 16;
     
     addPdfTableRow(
@@ -130,6 +141,9 @@ const buildStockBalancePdf = (items: StockItem[], createdAt: Date, company?: str
     const factory = item.factoryBalance || 0;
     const office = item.officeBalance || 0;
     const total = ht + factory + office;
+    const zeroBalanceCount = [ht, factory, office].filter((balance) => balance === 0).length;
+    const rowFillColor =
+      zeroBalanceCount === 3 ? PDF_ZERO_ALL_FILL : zeroBalanceCount > 0 ? PDF_ZERO_PARTIAL_FILL : undefined;
 
     addPdfTableRow(pageLines, y, [
       item.name,
@@ -138,7 +152,7 @@ const buildStockBalancePdf = (items: StockItem[], createdAt: Date, company?: str
       String(factory),
       String(office),
       String(total),
-    ]);
+    ], false, rowFillColor);
     y -= PDF_ROW_HEIGHT;
   });
 
