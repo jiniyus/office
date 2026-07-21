@@ -9,13 +9,16 @@ import { useToast } from "@/hooks/use-toast";
 import { useStockItems } from "@/lib/firestore-hooks";
 import type { StockItem } from "@/lib/types";
 import {
+  getBalanceSnapshots,
   getAdvancedTransactionAudit,
   recalculateAdvancedState,
+  restoreBalanceSnapshot,
   type AdvancedTransactionAuditRow,
+  type BalanceSnapshotSummary,
 } from "@/lib/advanced-history";
 import { useEffect, useMemo, useState } from "react";
 import { format } from "date-fns";
-import { ChevronDown, Wrench, Search, FileText } from "lucide-react";
+import { ChevronDown, Wrench, Search, FileText, RotateCcw } from "lucide-react";
 
 const PDF_PAGE_WIDTH = 595;
 const PDF_PAGE_HEIGHT = 842;
@@ -199,8 +202,13 @@ export default function Profile() {
   const [selectedAuditItemId, setSelectedAuditItemId] = useState("");
   const [isAuditPickerOpen, setIsAuditPickerOpen] = useState(false);
   const [auditRows, setAuditRows] = useState<AdvancedTransactionAuditRow[]>([]);
+  const [balanceSnapshots, setBalanceSnapshots] = useState<BalanceSnapshotSummary[]>([]);
+  const [selectedSnapshotId, setSelectedSnapshotId] = useState("");
+  const [isSnapshotPickerOpen, setIsSnapshotPickerOpen] = useState(false);
   const [isRecalculating, setIsRecalculating] = useState(false);
   const [isLoadingAudit, setIsLoadingAudit] = useState(false);
+  const [isLoadingSnapshots, setIsLoadingSnapshots] = useState(false);
+  const [isRestoringSnapshot, setIsRestoringSnapshot] = useState(false);
 
   const sortedItems = useMemo(
     () =>
@@ -216,6 +224,10 @@ export default function Profile() {
   const selectedAuditLabel = selectedAuditItem
     ? `${selectedAuditItem.name} - ${selectedAuditItem.category}`
     : "Select item to inspect";
+  const selectedSnapshot = balanceSnapshots.find((snapshot) => snapshot.id === selectedSnapshotId);
+  const selectedSnapshotLabel = selectedSnapshot
+    ? `${format(selectedSnapshot.createdAt, "MMM dd, yyyy HH:mm:ss")} - ${selectedSnapshot.reason.replaceAll("_", " ")}`
+    : "Select snapshot to restore";
 
   useEffect(() => {
     setAdminPassword("");
@@ -241,7 +253,10 @@ export default function Profile() {
 
     try {
       setIsRecalculating(true);
-      await recalculateAdvancedState(user?.company);
+      await recalculateAdvancedState(user?.company, {
+        id: user?.uid || "",
+        name: user?.displayName || "Unknown",
+      });
       toast({
         title: "Recalculation complete",
         description: "All advanced stock balances were rebuilt from transaction history.",
@@ -255,6 +270,64 @@ export default function Profile() {
       });
     } finally {
       setIsRecalculating(false);
+    }
+  };
+
+  const handleLoadSnapshots = async () => {
+    if (!validateAdminPassword()) return;
+
+    try {
+      setIsLoadingSnapshots(true);
+      const snapshots = await getBalanceSnapshots(user?.company);
+      setBalanceSnapshots(snapshots);
+      setSelectedSnapshotId((current) =>
+        current && snapshots.some((snapshot) => snapshot.id === current)
+          ? current
+          : snapshots[0]?.id || ""
+      );
+      toast({
+        title: "Snapshots loaded",
+        description: `Found ${snapshots.length} balance snapshot(s).`,
+      });
+    } catch (error) {
+      console.error("Error loading balance snapshots:", error);
+      toast({
+        variant: "destructive",
+        title: "Snapshot load failed",
+        description: "Could not load saved balance snapshots.",
+      });
+    } finally {
+      setIsLoadingSnapshots(false);
+    }
+  };
+
+  const handleRestoreSnapshot = async () => {
+    if (!validateAdminPassword()) return;
+    if (!selectedSnapshotId) {
+      toast({
+        variant: "destructive",
+        title: "Select a snapshot",
+        description: "Choose a saved balance snapshot before restoring.",
+      });
+      return;
+    }
+
+    try {
+      setIsRestoringSnapshot(true);
+      const restoredCount = await restoreBalanceSnapshot(selectedSnapshotId);
+      toast({
+        title: "Snapshot restored",
+        description: `Restored balances for ${restoredCount} item(s).`,
+      });
+    } catch (error) {
+      console.error("Error restoring balance snapshot:", error);
+      toast({
+        variant: "destructive",
+        title: "Restore failed",
+        description: "Could not restore balances from the selected snapshot.",
+      });
+    } finally {
+      setIsRestoringSnapshot(false);
     }
   };
 
@@ -396,6 +469,64 @@ export default function Profile() {
                 <Button onClick={handleRecalculateAll} disabled={isRecalculating}>
                   <Wrench className="mr-2 h-4 w-4" />
                   {isRecalculating ? "Recalculating..." : "Recalculate All Stock"}
+                </Button>
+              </div>
+
+              <div className="grid gap-4 border-t border-slate-100 pt-6 md:grid-cols-[1fr_auto_auto] md:items-end">
+                <div className="space-y-2">
+                  <Label>Balance Snapshot</Label>
+                  <div className="relative">
+                    <button
+                      type="button"
+                      className="flex h-10 w-full items-center justify-between rounded-md border border-input bg-white px-3 text-left text-sm shadow-sm"
+                      onClick={() => setIsSnapshotPickerOpen((current) => !current)}
+                    >
+                      <span className={selectedSnapshot ? "text-slate-900" : "text-slate-500"}>
+                        {selectedSnapshotLabel}
+                      </span>
+                      <ChevronDown className="h-4 w-4 text-slate-500" />
+                    </button>
+
+                    {isSnapshotPickerOpen && (
+                      <div className="absolute z-20 mt-1 h-40 w-full overflow-y-auto rounded-md border border-slate-200 bg-white p-1 shadow-lg">
+                        {balanceSnapshots.length === 0 ? (
+                          <div className="px-2 py-1.5 text-sm text-slate-500">No snapshots loaded</div>
+                        ) : (
+                          balanceSnapshots.map((snapshot) => {
+                            const isSelected = selectedSnapshotId === snapshot.id;
+                            return (
+                              <button
+                                key={snapshot.id}
+                                type="button"
+                                className={`flex w-full flex-col rounded-sm px-2 py-1.5 text-left text-sm transition-colors ${
+                                  isSelected
+                                    ? "bg-primary text-primary-foreground"
+                                    : "text-slate-700 hover:bg-slate-100"
+                                }`}
+                                onClick={() => {
+                                  setSelectedSnapshotId(snapshot.id);
+                                  setIsSnapshotPickerOpen(false);
+                                }}
+                              >
+                                <span>{format(snapshot.createdAt, "MMM dd, yyyy HH:mm:ss")}</span>
+                                <span className={isSelected ? "text-primary-foreground/80" : "text-slate-500"}>
+                                  {snapshot.reason.replaceAll("_", " ")} - {snapshot.itemCount} items
+                                </span>
+                              </button>
+                            );
+                          })
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <Button variant="outline" onClick={handleLoadSnapshots} disabled={isLoadingSnapshots}>
+                  <Search className="mr-2 h-4 w-4" />
+                  {isLoadingSnapshots ? "Loading..." : "Load Snapshots"}
+                </Button>
+                <Button onClick={handleRestoreSnapshot} disabled={isRestoringSnapshot || !selectedSnapshotId}>
+                  <RotateCcw className="mr-2 h-4 w-4" />
+                  {isRestoringSnapshot ? "Restoring..." : "Restore Snapshot"}
                 </Button>
               </div>
 

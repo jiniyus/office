@@ -35,6 +35,7 @@ import { collection, addDoc, Timestamp, updateDoc, doc, deleteDoc, getDocs, quer
 import { db } from "@/lib/firebase";
 import { useToast } from "@/hooks/use-toast";
 import { capitalize, naturalCompare } from "@/lib/utils";
+import { createBalanceSnapshot } from "@/lib/advanced-history";
 
 export default function Stock() {
   const [searchTerm, setSearchTerm] = useState("");
@@ -604,6 +605,12 @@ export default function Stock() {
       setIsSubmitting(true);
       const bulkTransactionId = `bulk-${Date.now()}`;
       const transactionRecords = [];
+
+      await createBalanceSnapshot({
+        company: user?.company,
+        reason: "before_bulk_transaction",
+        createdBy: { id: user?.uid || "", name: user?.displayName || "Unknown" },
+      });
 
       for (const row of bulkTransactionRows) {
         const item = items.find(it => it.id === row.id)!;

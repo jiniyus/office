@@ -42,7 +42,7 @@ import { db } from "@/lib/firebase";
 import { collection, query, where, getDocs, deleteDoc, doc, Timestamp, updateDoc, getDoc } from "firebase/firestore";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
-import { reverseAdvancedGroup, saveAdvancedGroupEdit, findMirrorFollowUps, recalculateAdvancedStateOptimized } from "@/lib/advanced-history";
+import { createAdjustmentTransaction, reverseAdvancedGroup, saveAdvancedGroupEdit, findMirrorFollowUps, recalculateAdvancedStateOptimized } from "@/lib/advanced-history";
 
 interface HistoryProcessItem {
   itemId: string;
@@ -347,22 +347,51 @@ export default function HistoryPage() {
       const factoryDeduction = Math.min(stockItem.factoryBalance, remainingCascadeQty);
       const nextFABalance = stockItem.factoryBalance - factoryDeduction;
 
+      const previousHTBalance = stockItem.heatTreatmentBalance;
+      const previousFABalance = stockItem.factoryBalance;
+      const previousOFBalance = stockItem.officeBalance;
+      const previousTotal = previousHTBalance + previousFABalance + previousOFBalance;
+      const nextTotal = nextHTBalance + nextFABalance + nextOFBalance;
+
       await updateDoc(doc(db, "stock-items", stockItem.id), {
         heatTreatmentBalance: nextHTBalance,
         factoryBalance: nextFABalance,
         officeBalance: nextOFBalance,
-        quantity: nextHTBalance + nextFABalance + nextOFBalance,
+        quantity: nextTotal,
         lastUpdated: Timestamp.now(),
+      });
+
+      await createAdjustmentTransaction({
+        company: user?.company || "",
+        itemId: stockItem.name,
+        category: stockItem.category,
+        user: {
+          id: user?.uid || "",
+          name: user?.displayName || "Unknown",
+        },
+        quantityChange: nextTotal - previousTotal,
+        previousBalance: previousTotal,
+        balance: nextTotal,
+        previousHTBalance,
+        previousFABalance,
+        previousOFBalance,
+        newHTBalance: nextHTBalance,
+        newFABalance: nextFABalance,
+        newOFBalance: nextOFBalance,
+        affectedBalance: "heatTreatmentBalance",
+        locationId: null,
+        businessDate: processSnapshot.exists()
+          ? (processSnapshot.data()?.businessDate ?? Timestamp.now())
+          : Timestamp.now(),
+        timestamp: Timestamp.now(),
+        notes: `Reversal adjustment preserving history for heat treatment process ${processId}.`,
+        processId,
       });
     }
 
     if (processSnapshot.exists()) {
       await deleteDoc(doc(db, "processes", processId));
     }
-
-    await Promise.all(
-      processTransactions.map((tx: any) => deleteDoc(doc(db, "transactions", tx.id)))
-    );
 
     return processTransactions.length;
   };
@@ -429,6 +458,57 @@ export default function HistoryPage() {
             : true;
         })()
     : false;
+
+  const createAdjustmentForTx = async (tx: any, updateObj: any) => {
+    const itemId = await findStockItemDocId(tx.itemId, tx.category);
+    if (!itemId) return;
+
+    const stockItem = items.find((item) => item.id === itemId);
+    if (!stockItem) return;
+
+    const previousHT = stockItem.heatTreatmentBalance || 0;
+    const previousFA = stockItem.factoryBalance || 0;
+    const previousOF = stockItem.officeBalance || 0;
+    const nextHT = updateObj.heatTreatmentBalance ?? previousHT;
+    const nextFA = updateObj.factoryBalance ?? previousFA;
+    const nextOF = updateObj.officeBalance ?? previousOF;
+    const previousBalance = previousHT + previousFA + previousOF;
+    const balance = nextHT + nextFA + nextOF;
+
+    await createAdjustmentTransaction({
+      company: user?.company || "",
+      itemId: tx.itemId,
+      category: tx.category,
+      user: {
+        id: user?.uid || "",
+        name: user?.displayName || "Unknown",
+      },
+      quantityChange: balance - previousBalance,
+      previousBalance,
+      balance,
+      previousHTBalance: previousHT,
+      previousFABalance: previousFA,
+      previousOFBalance: previousOF,
+      newHTBalance: nextHT,
+      newFABalance: nextFA,
+      newOFBalance: nextOF,
+      affectedBalance:
+        tx.type === "sales"
+          ? "officeBalance"
+          : tx.type === "factory_transfer_created"
+          ? "factoryBalance"
+          : tx.type === "office_transfer_created"
+          ? "officeBalance"
+          : "heatTreatmentBalance",
+      locationId: tx.locationId ?? null,
+      businessDate: tx.businessDate,
+      timestamp: Timestamp.now(),
+      notes: `Reversal adjustment preserving history for transaction ${tx.id}.`,
+      processId: tx.processId,
+      transferId: tx.transferId,
+      salesId: tx.salesId,
+    });
+  };
 
   const handleDeleteTransaction = async (idOrBulkId: string, isBulkId: boolean = false) => {
     try {
@@ -811,10 +891,10 @@ export default function HistoryPage() {
           // Find all items and restore their previous balances
           const updatePromises = relevantTxs.map(async tx => {
             const itemId = await findStockItemDocId(tx.itemId, tx.category);
-            if (!itemId) return;
+            if (!itemId) return null;
 
             const updateObj: any = {
-              lastUpdated: Timestamp.now()
+              lastUpdated: Timestamp.now(),
             };
 
             if (tx.previousHTBalance !== undefined && tx.previousFABalance !== undefined && tx.previousOFBalance !== undefined) {
@@ -837,13 +917,16 @@ export default function HistoryPage() {
             }
 
             await updateDoc(doc(db, "stock-items", itemId), updateObj);
+            return { tx, updateObj };
           });
-          await Promise.all(updatePromises);
+
+          const updateResults = await Promise.all(updatePromises);
+          const adjustmentPromises = updateResults
+            .filter((result): result is { tx: any; updateObj: any } => !!result)
+            .map(({ tx, updateObj }) => createAdjustmentForTx(tx, updateObj));
+
+          await Promise.all(adjustmentPromises);
         }
-        
-        // Delete all transaction records
-        const deletePromises = relevantTxs.map(tx => deleteDoc(doc(db, "transactions", tx.id)));
-        await Promise.all(deletePromises);
 
         if (deleteOption === 'reverse') {
           toast({
@@ -869,7 +952,7 @@ export default function HistoryPage() {
             
             // Prepare the update object
             const updateObj: any = {
-              lastUpdated: Timestamp.now()
+              lastUpdated: Timestamp.now(),
             };
             
             // If we have stored balance information, use it
@@ -883,6 +966,7 @@ export default function HistoryPage() {
             }
             
             await updateDoc(doc(db, "stock-items", itemId), updateObj);
+            await createAdjustmentForTx(tx, updateObj);
           }
         } else if (deleteOption === 'reverse' && tx && (tx.type === 'sales' || tx.type === 'factory_transfer_created' || tx.type === 'office_transfer_created')) {
           // For sales, factory_transfer, and office_transfer, restore location-specific balances
@@ -891,7 +975,7 @@ export default function HistoryPage() {
             
             // Prepare the update object based on transaction metadata
             const updateObj: any = {
-              lastUpdated: Timestamp.now()
+              lastUpdated: Timestamp.now(),
             };
             
             if (tx.previousHTBalance !== undefined && tx.previousFABalance !== undefined && tx.previousOFBalance !== undefined) {
@@ -912,10 +996,22 @@ export default function HistoryPage() {
             }
             
             await updateDoc(doc(db, "stock-items", itemId), updateObj);
+            await createAdjustmentForTx(tx, updateObj);
           }
         }
-        
-        await deleteDoc(doc(db, "transactions", deleteConfirmId.id));
+
+        if (deleteOption === 'reverse') {
+          toast({
+            title: "Success",
+            description: "Transaction reversed successfully",
+          });
+        } else {
+          await deleteDoc(doc(db, "transactions", deleteConfirmId.id));
+          toast({
+            title: "Success",
+            description: "Transaction log deleted successfully",
+          });
+        }
         
         if (deleteOption === 'reverse') {
           toast({

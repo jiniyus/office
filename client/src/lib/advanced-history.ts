@@ -4,6 +4,7 @@ import {
   collection,
   deleteDoc,
   doc,
+  getDoc,
   getDocs,
   query,
   setDoc,
@@ -11,6 +12,14 @@ import {
   where,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
+import {
+  buildBalanceSnapshotItems,
+  type BalanceSnapshotDoc,
+  type BalanceSnapshotSummary,
+} from "@/lib/balance-snapshots";
+export type { BalanceSnapshotSummary } from "@/lib/balance-snapshots";
+export { buildBalanceSnapshotItems, applyBalanceSnapshotToItems } from "@/lib/balance-snapshots";
+import { replayBalanceHistory } from "@/lib/history-replay";
 import type { StockItem, Transaction } from "@/lib/types";
 
 type AdvancedTransactionType =
@@ -470,6 +479,142 @@ export async function loadAdvancedContext(company?: string): Promise<AdvancedCon
       };
     }),
   };
+}
+
+const mapBalanceSnapshotDoc = (docSnap: any): BalanceSnapshotDoc => {
+  const data = docSnap.data();
+  return {
+    id: docSnap.id,
+    company: data.company,
+    reason: data.reason || "balance_operation",
+    itemCount: data.itemCount || (data.items || []).length,
+    createdAt: data.createdAt?.toDate?.() || new Date(),
+    createdBy: data.createdBy || { id: "", name: "Unknown" },
+    items: data.items || [],
+  };
+};
+
+export async function createBalanceSnapshot(input: {
+  company?: string;
+  reason: string;
+  createdBy: {
+    id: string;
+    name: string;
+  };
+}): Promise<string> {
+  const context = await loadAdvancedContext(input.company);
+  const items = buildBalanceSnapshotItems(context.stockItems);
+  const snapshotRef = await addDoc(collection(db, "balance-snapshots"), {
+    company: input.company || "",
+    reason: input.reason,
+    itemCount: items.length,
+    items,
+    createdAt: Timestamp.now(),
+    createdBy: input.createdBy,
+  });
+
+  return snapshotRef.id;
+}
+
+export async function getBalanceSnapshots(company?: string): Promise<BalanceSnapshotSummary[]> {
+  const snapshotQuery = company
+    ? query(collection(db, "balance-snapshots"), where("company", "==", company))
+    : query(collection(db, "balance-snapshots"));
+  const snapshot = await getDocs(snapshotQuery);
+
+  return snapshot.docs
+    .map(mapBalanceSnapshotDoc)
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+}
+
+export async function restoreBalanceSnapshot(snapshotId: string): Promise<number> {
+  const snapshotDoc = await getDoc(doc(db, "balance-snapshots", snapshotId));
+  if (!snapshotDoc.exists()) {
+    throw new Error("Snapshot was not found.");
+  }
+
+  const snapshot = mapBalanceSnapshotDoc(snapshotDoc);
+  await Promise.all(
+    snapshot.items.map((item) =>
+      updateDoc(doc(db, "stock-items", item.stockItemId), {
+        heatTreatmentBalance: item.heatTreatmentBalance,
+        factoryBalance: item.factoryBalance,
+        officeBalance: item.officeBalance,
+        quantity: item.quantity,
+        lastUpdated: Timestamp.now(),
+      })
+    )
+  );
+
+  return snapshot.items.length;
+}
+
+const toFirestoreTimestamp = (value?: Date | Timestamp) => {
+  if (!value) return Timestamp.now();
+  return value instanceof Timestamp ? value : Timestamp.fromDate(value);
+};
+
+export async function createAdjustmentTransaction(input: {
+  company?: string;
+  itemId: string;
+  category: string;
+  user: {
+    id: string;
+    name: string;
+  };
+  quantityChange: number;
+  previousBalance: number;
+  balance: number;
+  previousHTBalance: number;
+  previousFABalance: number;
+  previousOFBalance: number;
+  newHTBalance: number;
+  newFABalance: number;
+  newOFBalance: number;
+  affectedBalance?: string;
+  locationId?: string | null;
+  businessDate?: Date;
+  timestamp?: Date | Timestamp;
+  notes?: string | null;
+  processId?: string;
+  transferId?: string;
+  salesId?: string;
+  bulkTransactionId?: string;
+}): Promise<string> {
+  const timestamp = toFirestoreTimestamp(input.timestamp);
+  const payload: Record<string, any> = {
+    company: input.company || "",
+    itemId: input.itemId,
+    category: input.category,
+    quantityChange: input.quantityChange,
+    previousBalance: input.previousBalance,
+    balance: input.balance,
+    previousHTBalance: input.previousHTBalance,
+    previousFABalance: input.previousFABalance,
+    previousOFBalance: input.previousOFBalance,
+    newHTBalance: input.newHTBalance,
+    newFABalance: input.newFABalance,
+    newOFBalance: input.newOFBalance,
+    affectedBalance: input.affectedBalance || "quantity",
+    locationId: input.locationId ?? null,
+    timestamp,
+    type: "adjustment",
+    edited: true,
+    editedAt: Timestamp.now(),
+    user: input.user,
+    notes: input.notes || null,
+    processId: input.processId,
+    transferId: input.transferId,
+    salesId: input.salesId,
+    bulkTransactionId: input.bulkTransactionId,
+  };
+
+  if (input.businessDate) {
+    payload.businessDate = Timestamp.fromDate(input.businessDate);
+  }
+
+  const snapshotRef = await addDoc(collection(db, "transactions"), payload);
+  return snapshotRef.id;
 }
 
 const getTransactionCollectionQuery = (company?: string) =>
@@ -1047,13 +1192,83 @@ export async function saveAdvancedGroupEdit(input: EditableGroupInput) {
     }
   }
 
-  // Delete stale transactions
+  // Preserve stale transactions and create adjustment records instead of deleting history
+  const stockByKey = new Map(
+    context.stockItems.map((item) => [toItemKey(item.name, item.category), item])
+  );
+  const mutableBalancesByItemId = new Map<
+    string,
+    { ht: number; fa: number; of: number; stockItem: StockItem }
+  >();
+
+  const getMutableBalances = (stockItem: StockItem) => {
+    const existing = mutableBalancesByItemId.get(stockItem.id);
+    if (existing) return existing;
+
+    const created = {
+      ht: stockItem.heatTreatmentBalance || 0,
+      fa: stockItem.factoryBalance || 0,
+      of: stockItem.officeBalance || 0,
+      stockItem,
+    };
+    mutableBalancesByItemId.set(stockItem.id, created);
+    return created;
+  };
+
+  const staleItemIds = new Set<string>();
+  const staleItemsByKey = new Map<string, { stockItem: StockItem; balances: { ht: number; fa: number; of: number } }>();
+
   for (const staleTx of existingTxs) {
     if (!matchedExistingTxIds.has(staleTx.id)) {
-      affectedItemKeys.add(toItemKey(staleTx.itemId, staleTx.category));
-      updatePromises.push(deleteDoc(doc(db, "transactions", staleTx.id)));
+      const itemKey = toItemKey(staleTx.itemId, staleTx.category);
+      const stockItem = context.stockItems.find((item) => toItemKey(item.name, item.category) === itemKey);
+      if (!stockItem) continue;
+
+      const finalBalances = mutableBalancesByItemId.get(stockItem.id);
+      if (!finalBalances) continue;
+
+      staleItemIds.add(stockItem.id);
+      staleItemsByKey.set(itemKey, {
+        stockItem,
+        balances: finalBalances,
+      });
+
+      affectedItemKeys.add(itemKey);
     }
   }
+
+  Array.from(staleItemsByKey.entries()).forEach(([itemKey, staleInfo]) => {
+    const { stockItem, balances } = staleInfo;
+    const previousTotal =
+      (stockItem.heatTreatmentBalance || 0) +
+      (stockItem.factoryBalance || 0) +
+      (stockItem.officeBalance || 0);
+    const nextTotal = balances.ht + balances.fa + balances.of;
+
+    updatePromises.push(
+      createAdjustmentTransaction({
+        company: input.company || stockItem.company || "",
+        itemId: stockItem.name,
+        category: stockItem.category,
+        user: input.user,
+        quantityChange: nextTotal - previousTotal,
+        previousBalance: previousTotal,
+        balance: nextTotal,
+        previousHTBalance: stockItem.heatTreatmentBalance || 0,
+        previousFABalance: stockItem.factoryBalance || 0,
+        previousOFBalance: stockItem.officeBalance || 0,
+        newHTBalance: balances.ht,
+        newFABalance: balances.fa,
+        newOFBalance: balances.of,
+        affectedBalance: "officeBalance",
+        locationId: null,
+        businessDate: input.businessDate,
+        timestamp: now,
+        notes: `Sales edit adjustment preserving history for ${stockItem.name} (${stockItem.category}).`,
+        salesId: input.groupId,
+      })
+    );
+  });
 
   await Promise.all(updatePromises);
 
@@ -1100,14 +1315,91 @@ export async function reverseAdvancedGroup(groupType: EditableGroupType, groupId
     affectedItemKeys.add(toItemKey(tx.itemId, tx.category));
   }
 
-  if (groupType === "sales") {
-    await applySalesReverseToCurrentStock(context, matchingTxs);
-    await Promise.all(matchingTxs.map((tx) => deleteDoc(doc(db, "transactions", tx.id))));
-    return;
+  const stockByKey = new Map(
+    context.stockItems.map((item) => [toItemKey(item.name, item.category), item])
+  );
+
+  const matchingTxsByItem = new Map<string, Transaction[]>();
+  for (const tx of matchingTxs) {
+    const itemKey = toItemKey(tx.itemId, tx.category);
+    const txs = matchingTxsByItem.get(itemKey) || [];
+    txs.push(tx);
+    matchingTxsByItem.set(itemKey, txs);
   }
 
-  // Delete the transactions immediately
-  await Promise.all(matchingTxs.map((tx) => deleteDoc(doc(db, "transactions", tx.id))));
+  const adjustmentPromises: Promise<string>[] = [];
+
+  Array.from(matchingTxsByItem.entries()).forEach(([itemKey, txs]) => {
+    const stockItem = stockByKey.get(itemKey);
+    if (!stockItem) return;
+
+    const totalDelta = txs.reduce(
+      (acc: { ht: number; fa: number; of: number }, tx: Transaction) => {
+        const txDelta = getTransactionBalanceDelta(tx);
+        return {
+          ht: acc.ht + txDelta.ht,
+          fa: acc.fa + txDelta.fa,
+          of: acc.of + txDelta.of,
+        };
+      },
+      { ht: 0, fa: 0, of: 0 }
+    );
+
+    const previousTotal =
+      (stockItem.heatTreatmentBalance || 0) +
+      (stockItem.factoryBalance || 0) +
+      (stockItem.officeBalance || 0);
+    const nextBalances = {
+      ht: Math.max(0, (stockItem.heatTreatmentBalance || 0) + totalDelta.ht),
+      fa: Math.max(0, (stockItem.factoryBalance || 0) + totalDelta.fa),
+      of: Math.max(0, (stockItem.officeBalance || 0) + totalDelta.of),
+    };
+    const nextTotal = nextBalances.ht + nextBalances.fa + nextBalances.of;
+
+    const affectedBalance =
+      groupType === "sales"
+        ? "officeBalance"
+        : groupType === "process"
+        ? "heatTreatmentBalance"
+        : groupType === "factory_transfer"
+        ? "factoryBalance"
+        : "officeBalance";
+
+    adjustmentPromises.push(
+      createAdjustmentTransaction({
+        company: stockItem.company,
+        itemId: stockItem.name,
+        category: stockItem.category,
+        user: { id: "system", name: "System" },
+        quantityChange: nextTotal - previousTotal,
+        previousBalance: previousTotal,
+        balance: nextTotal,
+        previousHTBalance: stockItem.heatTreatmentBalance || 0,
+        previousFABalance: stockItem.factoryBalance || 0,
+        previousOFBalance: stockItem.officeBalance || 0,
+        newHTBalance: nextBalances.ht,
+        newFABalance: nextBalances.fa,
+        newOFBalance: nextBalances.of,
+        affectedBalance,
+        locationId: null,
+        businessDate: txs[txs.length - 1].businessDate,
+        timestamp: Timestamp.now(),
+        notes: `Reversal adjustment preserving history for ${groupType}.`,
+        processId: groupType === "process" ? groupId : undefined,
+        transferId:
+          groupType === "factory_transfer" || groupType === "office_transfer"
+            ? groupId
+            : undefined,
+        salesId: groupType === "sales" ? groupId : undefined,
+      })
+    );
+
+    affectedItemKeys.add(itemKey);
+  });
+
+  if (adjustmentPromises.length > 0) {
+    await Promise.all(adjustmentPromises);
+  }
 
   if (groupType === "process") {
     await deleteDoc(doc(db, "processes", groupId));
@@ -1116,15 +1408,15 @@ export async function reverseAdvancedGroup(groupType: EditableGroupType, groupId
   // Use optimized recalculation only for affected items - much faster
   await recalculateAdvancedStateOptimized(company, affectedItemKeys);
 }
+
 // Optimized: Recalculate only affected items to improve performance
 export async function recalculateAdvancedStateOptimized(
   company?: string,
   affectedItemKeys?: Set<string>
 ) {
   const context = await loadAdvancedContext(company);
-  const replayTxs = context.transactions
-    .filter(isReplayableBalanceTransaction)
-    .sort(compareAdvancedTransactions);
+  const replayRows = replayBalanceHistory(context.transactions);
+  const replayTxs = replayRows.map((entry) => entry.tx);
   const advancedTxs = replayTxs.filter((tx) =>
     ADVANCED_TYPES.includes(tx.type as AdvancedTransactionType)
   );
@@ -1138,8 +1430,8 @@ export async function recalculateAdvancedStateOptimized(
   const balancesByKey = new Map<string, { ht: number; fa: number; of: number }>();
   const touchedItemKeys = new Set<string>(itemsToCheck);
 
-  for (const tx of replayTxs) {
-    const itemKey = toItemKey(tx.itemId, tx.category);
+  for (const replay of replayRows) {
+    const { tx, itemKey, after } = replay;
 
     // Skip if not affected and we're doing optimized calc
     if (!shouldFullRecalc && !itemsToCheck.has(itemKey)) {
@@ -1147,80 +1439,11 @@ export async function recalculateAdvancedStateOptimized(
     }
 
     touchedItemKeys.add(itemKey);
-
-    const current = balancesByKey.get(itemKey) || { ht: 0, fa: 0, of: 0 };
-    const before = { ...current };
-    let data: Record<string, any>;
-
-    if (tx.type === "creation" || tx.type === "adjustment") {
-      const next = {
-        ht: tx.newHTBalance || 0,
-        fa: tx.newFABalance || 0,
-        of: tx.newOFBalance || 0,
-      };
-
-      current.ht = next.ht;
-      current.fa = next.fa;
-      current.of = next.of;
-
-      data = {
-        quantityChange: getTrackedBalanceTotal(current) - getTrackedBalanceTotal(before),
-        previousBalance: getTrackedBalanceValue(tx, before),
-        balance: getTrackedBalanceValue(tx, current),
-        previousHTBalance: before.ht,
-        previousFABalance: before.fa,
-        previousOFBalance: before.of,
-        newHTBalance: current.ht,
-        newFABalance: current.fa,
-        newOFBalance: current.of,
-      };
-    } else {
-      const appliedQty = Math.max(0, Math.abs(tx.quantityChange || 0));
-
-      if (tx.type === "heat_treatment_created") {
-        current.ht += appliedQty;
-      } else if (tx.type === "factory_transfer_created") {
-        current.ht -= appliedQty;
-        current.fa += appliedQty;
-      } else if (tx.type === "office_transfer_created") {
-        current.fa -= appliedQty;
-        current.of += appliedQty;
-      } else if (tx.type === "sales") {
-        current.of -= appliedQty;
-      }
-
-      data = {
-        quantityChange: tx.type === "sales" ? -appliedQty : appliedQty,
-        previousBalance:
-          tx.type === "heat_treatment_created"
-            ? before.ht
-            : tx.type === "factory_transfer_created"
-            ? before.ht
-            : tx.type === "office_transfer_created"
-            ? before.fa
-            : before.of,
-        balance:
-          tx.type === "heat_treatment_created"
-            ? current.ht
-            : tx.type === "factory_transfer_created"
-            ? current.ht
-            : tx.type === "office_transfer_created"
-            ? current.fa
-            : current.of,
-        previousHTBalance: before.ht,
-        previousFABalance: before.fa,
-        previousOFBalance: before.of,
-        newHTBalance: current.ht,
-        newFABalance: current.fa,
-        newOFBalance: current.of,
-      };
-    }
-
-    balancesByKey.set(itemKey, current);
+    balancesByKey.set(itemKey, { ...after });
 
     txUpdates.push({
       id: tx.id,
-      data,
+      data: replay.data,
     });
   }
 
@@ -1255,7 +1478,15 @@ export async function recalculateAdvancedStateOptimized(
     shouldFullRecalc ? undefined : touchedItemKeys
   );
 }
-export async function recalculateAdvancedState(company?: string) {
+export async function recalculateAdvancedState(
+  company?: string,
+  user?: { id: string; name: string }
+) {
+  await createBalanceSnapshot({
+    company,
+    reason: "before_recalculate_all_stock",
+    createdBy: user || { id: "", name: "System" },
+  });
   await recalculateAdvancedStateOptimized(company);
 }
 
@@ -1266,40 +1497,14 @@ export async function getAdvancedTransactionAudit(
 ): Promise<AdvancedTransactionAuditRow[]> {
   const context = await loadAdvancedContext(company);
   const targetKey = itemName && category ? toItemKey(itemName, category) : null;
-  const replayTxs = context.transactions
-    .filter(isReplayableBalanceTransaction)
-    .filter((tx) => !targetKey || toItemKey(tx.itemId, tx.category) === targetKey)
-    .sort(compareAdvancedTransactions);
+  const replayRows = replayBalanceHistory(
+    context.transactions.filter((tx) => !targetKey || toItemKey(tx.itemId, tx.category) === targetKey)
+  );
 
-  const balancesByKey = new Map<string, { ht: number; fa: number; of: number }>();
   const rows: AdvancedTransactionAuditRow[] = [];
 
-  for (const tx of replayTxs) {
-    const itemKey = toItemKey(tx.itemId, tx.category);
-    const current = balancesByKey.get(itemKey) || { ht: 0, fa: 0, of: 0 };
-    const before = { ...current };
-
-    if (tx.type === "creation" || tx.type === "adjustment") {
-      current.ht = tx.newHTBalance || 0;
-      current.fa = tx.newFABalance || 0;
-      current.of = tx.newOFBalance || 0;
-    } else {
-      const appliedQty = Math.max(0, Math.abs(tx.quantityChange || 0));
-
-      if (tx.type === "heat_treatment_created") {
-        current.ht += appliedQty;
-      } else if (tx.type === "factory_transfer_created") {
-        current.ht -= appliedQty;
-        current.fa += appliedQty;
-      } else if (tx.type === "office_transfer_created") {
-        current.fa -= appliedQty;
-        current.of += appliedQty;
-      } else if (tx.type === "sales") {
-        current.of -= appliedQty;
-      }
-    }
-
-    const after = { ...current };
+  for (const replay of replayRows) {
+    const { tx, before, after } = replay;
     rows.push({
       id: tx.id,
       type: tx.type,
@@ -1315,8 +1520,6 @@ export async function getAdvancedTransactionAudit(
       notes: tx.notes,
       groupId: tx.bulkTransactionId || tx.processId || tx.transferId || tx.salesId,
     });
-
-    balancesByKey.set(itemKey, current);
   }
 
   return rows;

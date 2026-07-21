@@ -21,6 +21,7 @@ import { useAuth } from "@/lib/auth";
 import { collection, addDoc, Timestamp, deleteDoc, doc, updateDoc, getDocs, query, where, onSnapshot, getDoc } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useToast } from "@/hooks/use-toast";
+import { createAdjustmentTransaction } from "@/lib/advanced-history";
 import { capitalize, naturalCompare } from "@/lib/utils";
 import { format } from "date-fns";
 
@@ -475,18 +476,47 @@ export default function ProcessPage() {
           const factoryDeduction = Math.min(stockItem.factoryBalance, remainingCascadeQty);
           const nextFABalance = stockItem.factoryBalance - factoryDeduction;
 
+          const previousHTBalance = stockItem.heatTreatmentBalance;
+          const previousFABalance = stockItem.factoryBalance;
+          const previousOFBalance = stockItem.officeBalance;
+          const previousTotal = previousHTBalance + previousFABalance + previousOFBalance;
+          const nextTotal = nextHTBalance + nextFABalance + nextOFBalance;
+
           await updateDoc(doc(db, "stock-items", stockItem.id), {
             heatTreatmentBalance: nextHTBalance,
             factoryBalance: nextFABalance,
             officeBalance: nextOFBalance,
-            quantity: nextHTBalance + nextFABalance + nextOFBalance,
+            quantity: nextTotal,
             lastUpdated: Timestamp.now(),
           });
-        }
 
-        await Promise.all(
-          processTransactions.map((tx) => deleteDoc(doc(db, "transactions", tx.id)))
-        );
+          await createAdjustmentTransaction({
+            company: user?.company || "",
+            itemId: stockItem.name,
+            category: stockItem.category,
+            user: {
+              id: user?.uid || "",
+              name: user?.displayName || "Unknown",
+            },
+            quantityChange: nextTotal - previousTotal,
+            previousBalance: previousTotal,
+            balance: nextTotal,
+            previousHTBalance,
+            previousFABalance,
+            previousOFBalance,
+            newHTBalance: nextHTBalance,
+            newFABalance: nextFABalance,
+            newOFBalance: nextOFBalance,
+            affectedBalance: "heatTreatmentBalance",
+            locationId: null,
+            businessDate: processSnapshot.exists()
+              ? (processSnapshot.data()?.businessDate ?? Timestamp.now())
+              : Timestamp.now(),
+            timestamp: Timestamp.now(),
+            notes: `Reversal adjustment preserving history for heat treatment process ${processId}.`,
+            processId,
+          });
+        }
 
         if (processSnapshot.exists()) {
           await deleteDoc(doc(db, "processes", processId));
@@ -536,10 +566,8 @@ export default function ProcessPage() {
         });
       }
 
-      // Delete the process
+      // Delete the process record but keep the transaction history as adjustment records
       await deleteDoc(doc(db, "processes", processId));
-      const processTxSnapshot = await getDocs(query(collection(db, "transactions"), where("processId", "==", processId)));
-      await Promise.all(processTxSnapshot.docs.map((txDoc) => deleteDoc(doc(db, "transactions", txDoc.id))));
       setProcesses(processes.filter(p => p.id !== processId));
       setDeleteConfirmProcessId(null);
       setDeleteProcessPassword("");
