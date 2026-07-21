@@ -62,6 +62,7 @@ export interface Transaction {
   newFABalance?: number; // New factory balance
   newOFBalance?: number; // New office balance
   historyDeleteOnly?: boolean; // Allow only log deletion in History
+  historyHidden?: boolean; // Hide from History while retaining the audit record
   manualStockEdit?: boolean; // Marks direct stock balance edits
   user: {
     id: string;

@@ -604,7 +604,7 @@ export default function Stock() {
     try {
       setIsSubmitting(true);
       const bulkTransactionId = `bulk-${Date.now()}`;
-      const transactionRecords = [];
+      const transactionRecords: Record<string, any>[] = [];
 
       await createBalanceSnapshot({
         company: user?.company,
@@ -710,7 +710,7 @@ export default function Stock() {
     try {
       setIsSubmitting(true);
       const salesId = `sales-${Date.now()}`;
-      const transactionRecords = [];
+      const transactionRecords: Record<string, any>[] = [];
       
       // Get office transfer processes once and keep a mutable copy
       const processesSnapshot = await getDocs(query(collection(db, "processes"), where("processType", "==", "office_transfer")));

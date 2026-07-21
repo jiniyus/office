@@ -205,6 +205,7 @@ export default function HistoryPage() {
       newFABalance: data.newFABalance,
       newOFBalance: data.newOFBalance,
       historyDeleteOnly: data.historyDeleteOnly || false,
+      historyHidden: data.historyHidden || false,
       manualStockEdit: data.manualStockEdit || false,
       user: data.user || { id: "", name: "Unknown" },
     };
@@ -397,7 +398,7 @@ export default function HistoryPage() {
   };
 
   const filteredTransactions = useMemo(() => {
-    let result = transactions;
+    let result = transactions.filter((tx) => !tx.historyHidden);
     
     if (selectedDate) {
       result = result.filter(tx => {
@@ -920,12 +921,20 @@ export default function HistoryPage() {
             return { tx, updateObj };
           });
 
-          const updateResults = await Promise.all(updatePromises);
-          const adjustmentPromises = updateResults
-            .filter((result): result is { tx: any; updateObj: any } => !!result)
-            .map(({ tx, updateObj }) => createAdjustmentForTx(tx, updateObj));
+          await Promise.all(updatePromises);
+        }
 
-          await Promise.all(adjustmentPromises);
+        if (deleteOption === 'reverse') {
+          await Promise.all(relevantTxs.map((tx) => deleteDoc(doc(db, "transactions", tx.id))));
+        } else {
+          await Promise.all(
+            relevantTxs.map((tx) =>
+              updateDoc(doc(db, "transactions", tx.id), {
+                historyHidden: true,
+                historyHiddenAt: Timestamp.now(),
+              })
+            )
+          );
         }
 
         if (deleteOption === 'reverse') {
@@ -966,8 +975,9 @@ export default function HistoryPage() {
             }
             
             await updateDoc(doc(db, "stock-items", itemId), updateObj);
-            await createAdjustmentForTx(tx, updateObj);
           }
+
+          await deleteDoc(doc(db, "transactions", tx.id));
         } else if (deleteOption === 'reverse' && tx && (tx.type === 'sales' || tx.type === 'factory_transfer_created' || tx.type === 'office_transfer_created')) {
           // For sales, factory_transfer, and office_transfer, restore location-specific balances
           const itemId = await findStockItemDocId(tx.itemId, tx.category);
@@ -996,8 +1006,9 @@ export default function HistoryPage() {
             }
             
             await updateDoc(doc(db, "stock-items", itemId), updateObj);
-            await createAdjustmentForTx(tx, updateObj);
           }
+
+          await deleteDoc(doc(db, "transactions", tx.id));
         }
 
         if (deleteOption === 'reverse') {
@@ -1006,7 +1017,10 @@ export default function HistoryPage() {
             description: "Transaction reversed successfully",
           });
         } else {
-          await deleteDoc(doc(db, "transactions", deleteConfirmId.id));
+          await updateDoc(doc(db, "transactions", deleteConfirmId.id), {
+            historyHidden: true,
+            historyHiddenAt: Timestamp.now(),
+          });
           toast({
             title: "Success",
             description: "Transaction log deleted successfully",
