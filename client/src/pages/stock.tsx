@@ -233,6 +233,71 @@ export default function Stock() {
     });
   };
 
+  const adjustManualHeatTreatmentProcess = async ({
+    stockItemId,
+    itemName,
+    category,
+    quantityDelta,
+  }: {
+    stockItemId: string;
+    itemName: string;
+    category: string;
+    quantityDelta: number;
+  }) => {
+    if (quantityDelta === 0) return;
+
+    if (quantityDelta > 0) {
+      await createManualHeatTreatmentProcess({
+        stockItemId,
+        itemName,
+        category,
+        quantity: quantityDelta,
+      });
+      return;
+    }
+
+    const processSnapshot = await getDocs(query(collection(db, "processes"), where("processType", "==", "heat_treatment")));
+    const now = Timestamp.now();
+    let remainingDelta = Math.abs(quantityDelta);
+
+    for (const docSnap of processSnapshot.docs) {
+      const data = docSnap.data();
+      if (data.source !== "manual_stock_edit") continue;
+
+      const manualItems = Array.isArray(data.items) ? [...data.items] : [];
+      const itemIndex = manualItems.findIndex((item: any) =>
+        item.itemId === stockItemId &&
+        item.itemName === itemName &&
+        item.category === category
+      );
+
+      if (itemIndex === -1) continue;
+
+      const currentQty = Math.max(0, Number(manualItems[itemIndex].quantity || 0));
+      if (currentQty <= 0) continue;
+
+      const appliedQty = Math.min(currentQty, remainingDelta);
+      const nextQty = currentQty - appliedQty;
+      manualItems[itemIndex] = {
+        ...manualItems[itemIndex],
+        quantity: nextQty,
+      };
+
+      const remainingItems = manualItems.filter((item: any) => (item.quantity || 0) > 0);
+      if (remainingItems.length === 0) {
+        await deleteDoc(doc(db, "processes", docSnap.id));
+      } else {
+        await updateDoc(doc(db, "processes", docSnap.id), {
+          items: remainingItems,
+          lastUpdated: now,
+        });
+      }
+
+      remainingDelta -= appliedQty;
+      if (remainingDelta <= 0) break;
+    }
+  };
+
   const getTotalBalance = (item: any) => {
     return ((item.heatTreatmentBalance || 0) + (item.factoryBalance || 0) + (item.officeBalance || 0));
   };
@@ -421,7 +486,7 @@ export default function Stock() {
     const previousTotal = previousHTBalance + previousFABalance + previousOFBalance;
     const nextTotal = nextHTBalance + nextFABalance + nextOFBalance;
     const quantityChange = nextTotal - previousTotal;
-    const createdHTQuantity = Math.max(0, nextHTBalance - previousHTBalance);
+    const createdHTQuantity = nextHTBalance - previousHTBalance;
 
     try {
       setIsSubmitting(true);
@@ -457,11 +522,11 @@ export default function Stock() {
         manualStockEdit: true,
         user: { id: user?.uid || "", name: user?.displayName || "Unknown" }
       });
-      await createManualHeatTreatmentProcess({
+      await adjustManualHeatTreatmentProcess({
         stockItemId: editingProductId,
         itemName: currentItem.name,
         category: currentItem.category,
-        quantity: createdHTQuantity,
+        quantityDelta: createdHTQuantity,
       });
 
       toast({ title: "Success", description: "Stock balances updated successfully" });

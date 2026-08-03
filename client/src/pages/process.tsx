@@ -21,7 +21,7 @@ import { useAuth } from "@/lib/auth";
 import { collection, addDoc, Timestamp, deleteDoc, doc, updateDoc, getDocs, query, where, onSnapshot, getDoc } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useToast } from "@/hooks/use-toast";
-import { createAdjustmentTransaction } from "@/lib/advanced-history";
+import { createAdjustmentTransaction, recalculateAdvancedStateOptimized } from "@/lib/advanced-history";
 import { capitalize, naturalCompare } from "@/lib/utils";
 import { format } from "date-fns";
 
@@ -102,6 +102,7 @@ export default function ProcessPage() {
   const [serialCounter, setSerialCounter] = useState(1);
   const [deleteConfirmProcessId, setDeleteConfirmProcessId] = useState<string | null>(null);
   const [deleteProcessPassword, setDeleteProcessPassword] = useState("");
+  const [deleteProcessMode, setDeleteProcessMode] = useState<"delete-only" | "reverse">("delete-only");
 
   const { items, loading } = useStockItems();
   const { user } = useAuth();
@@ -137,23 +138,46 @@ export default function ProcessPage() {
     return null;
   };
 
+  const cleanupLegacyManualEditProcesses = async () => {
+    try {
+      const processSnapshot = await getDocs(
+        query(collection(db, "processes"), where("processType", "==", "heat_treatment"))
+      );
+
+      const legacyDocIds = processSnapshot.docs
+        .filter((docSnap) => docSnap.data().source === "manual_stock_edit")
+        .map((docSnap) => docSnap.id);
+
+      if (legacyDocIds.length === 0) return;
+
+      await Promise.all(
+        legacyDocIds.map((processId) => deleteDoc(doc(db, "processes", processId)))
+      );
+      await recalculateAdvancedStateOptimized(user?.company);
+    } catch (error) {
+      console.error("Failed to clean up fake manual-edit HT process blocks:", error);
+    }
+  };
+
   // Load processes from Firestore on component mount with real-time updates
   useEffect(() => {
     try {
       const q = query(collection(db, "processes"));
       const unsubscribe = onSnapshot(q, (querySnapshot) => {
-        const loadedProcesses = querySnapshot.docs.map(docSnap => {
-          const data = docSnap.data();
-          return {
-            id: docSnap.id,
-            serialNumber: data.serialNumber,
-            date: data.date?.toDate ? data.date.toDate() : new Date(data.date),
-            processType: data.processType,
-            items: data.items,
-            createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt),
-            createdBy: data.createdBy,
-          } as ProcessData;
-        });
+        const loadedProcesses = querySnapshot.docs
+          .filter((docSnap) => docSnap.data().source !== "manual_stock_edit")
+          .map(docSnap => {
+            const data = docSnap.data();
+            return {
+              id: docSnap.id,
+              serialNumber: data.serialNumber,
+              date: data.date?.toDate ? data.date.toDate() : new Date(data.date),
+              processType: data.processType,
+              items: data.items,
+              createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt),
+              createdBy: data.createdBy,
+            } as ProcessData;
+          });
         
         // Sort by creation date (newest first)
         loadedProcesses.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
@@ -166,6 +190,7 @@ export default function ProcessPage() {
         }
       });
 
+      cleanupLegacyManualEditProcesses();
       return () => unsubscribe();
     } catch (error) {
       console.error("Error setting up processes listener:", error);
@@ -378,7 +403,7 @@ export default function ProcessPage() {
     }
   };
 
-  const handleDeleteProcess = async (processId: string) => {
+  const handleDeleteProcess = async (processId: string, mode: "delete-only" | "reverse" = "reverse") => {
     try {
       // Find the process to get its details
       const processToDelete = processes.find(p => p.id === processId);
@@ -388,13 +413,27 @@ export default function ProcessPage() {
         if (deleteConfirmProcessId !== processId) {
           setDeleteConfirmProcessId(processId);
           setDeleteProcessPassword("");
+          setDeleteProcessMode(mode);
           return;
         }
         if (deleteProcessPassword !== PROCESS_DELETE_PASSWORD) {
           toast({
             variant: "destructive",
             title: "Incorrect password",
-            description: "Enter the 4-digit password to manually delete this heat treatment entry.",
+            description: "Enter the 4-digit password to delete or reverse this heat treatment entry.",
+          });
+          return;
+        }
+
+        if (mode === "delete-only") {
+          await deleteDoc(doc(db, "processes", processId));
+          setProcesses((currentProcesses) => currentProcesses.filter((p) => p.id !== processId));
+          setDeleteConfirmProcessId(null);
+          setDeleteProcessPassword("");
+          setDeleteProcessMode("delete-only");
+          toast({
+            title: "Success",
+            description: "Heat treatment process deleted",
           });
           return;
         }
@@ -522,12 +561,26 @@ export default function ProcessPage() {
           await deleteDoc(doc(db, "processes", processId));
         }
 
-        setProcesses(processes.filter(p => p.id !== processId));
+        setProcesses((currentProcesses) => currentProcesses.filter((p) => p.id !== processId));
         setDeleteConfirmProcessId(null);
         setDeleteProcessPassword("");
+        setDeleteProcessMode("delete-only");
         toast({
           title: "Success",
           description: "Process deleted and history reversed",
+        });
+        return;
+      }
+
+      if (mode === "delete-only") {
+        await deleteDoc(doc(db, "processes", processId));
+        setProcesses((currentProcesses) => currentProcesses.filter((p) => p.id !== processId));
+        setDeleteConfirmProcessId(null);
+        setDeleteProcessPassword("");
+        setDeleteProcessMode("delete-only");
+        toast({
+          title: "Success",
+          description: "Process deleted successfully",
         });
         return;
       }
@@ -568,9 +621,10 @@ export default function ProcessPage() {
 
       // Delete the process record but keep the transaction history as adjustment records
       await deleteDoc(doc(db, "processes", processId));
-      setProcesses(processes.filter(p => p.id !== processId));
+      setProcesses((currentProcesses) => currentProcesses.filter((p) => p.id !== processId));
       setDeleteConfirmProcessId(null);
       setDeleteProcessPassword("");
+      setDeleteProcessMode("delete-only");
       toast({
         title: "Success",
         description: "Process deleted and changes reverted",
@@ -1012,6 +1066,7 @@ export default function ProcessPage() {
             if (!open) {
               setDeleteConfirmProcessId(null);
               setDeleteProcessPassword("");
+              setDeleteProcessMode("delete-only");
             }
           }}
         >
@@ -1019,7 +1074,7 @@ export default function ProcessPage() {
             <DialogHeader>
               <DialogTitle>Delete Heat Treatment</DialogTitle>
               <DialogDescription>
-                Enter the 4-digit code to delete and reverse this heat treatment entry.
+                Enter the 4-digit code to delete or reverse this heat treatment entry.
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-3 py-2">
@@ -1045,15 +1100,28 @@ export default function ProcessPage() {
                 onClick={() => {
                   setDeleteConfirmProcessId(null);
                   setDeleteProcessPassword("");
+                  setDeleteProcessMode("delete-only");
                 }}
               >
                 Cancel
               </Button>
               <Button
+                variant="outline"
+                onClick={() => {
+                  if (deleteConfirmProcessId) {
+                    setDeleteProcessMode("delete-only");
+                    handleDeleteProcess(deleteConfirmProcessId, "delete-only");
+                  }
+                }}
+              >
+                Delete Only
+              </Button>
+              <Button
                 variant="destructive"
                 onClick={() => {
                   if (deleteConfirmProcessId) {
-                    handleDeleteProcess(deleteConfirmProcessId);
+                    setDeleteProcessMode("reverse");
+                    handleDeleteProcess(deleteConfirmProcessId, "reverse");
                   }
                 }}
               >

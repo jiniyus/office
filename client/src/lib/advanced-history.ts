@@ -682,13 +682,15 @@ const assertNoNegativeBalances = (txs: Transaction[], itemKeysToCheck: Set<strin
     }
 
     balancesByKey.set(itemKey, current);
+  }
 
-    if (
-      itemKeysToCheck.has(itemKey) &&
-      (current.ht < 0 || current.fa < 0 || current.of < 0)
-    ) {
+  for (const itemKey of Array.from(itemKeysToCheck)) {
+    const finalBalances = balancesByKey.get(itemKey);
+    if (finalBalances && (finalBalances.ht < 0 || finalBalances.fa < 0 || finalBalances.of < 0)) {
+      const itemLabel = itemKey.split("::")[0];
+      const category = itemKey.split("::")[1] || "unknown";
       throw new Error(
-        `Cannot save because ${tx.itemId} (${tx.category}) would have a negative balance.`
+        `Cannot save because ${itemLabel} (${category}) would have a negative balance.`
       );
     }
   }
