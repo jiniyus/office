@@ -113,6 +113,33 @@ const getStartingBalanceFromEarliestAuditEntry = (txs: Transaction[], itemKey: s
   return { ht: 0, fa: 0, of: 0 };
 };
 
+export const hasReplayStartingBaseline = (
+  transactions: Transaction[],
+  itemName: string,
+  category: string
+): boolean => {
+  const itemKey = toItemKey(itemName, category);
+  const itemTxs = transactions
+    .filter((tx) => toItemKey(tx.itemId, tx.category) === itemKey)
+    .sort(compareReplayTransactions);
+
+  if (itemTxs.length === 0) {
+    return false;
+  }
+
+  const earliestTx = itemTxs[0];
+  if (
+    earliestTx.previousHTBalance !== undefined ||
+    earliestTx.previousFABalance !== undefined ||
+    earliestTx.previousOFBalance !== undefined ||
+    earliestTx.previousBalance !== undefined
+  ) {
+    return true;
+  }
+
+  return false;
+};
+
 export const replayBalanceHistory = (transactions: Transaction[]): ReplayBalanceEntry[] => {
   const replayTxs = transactions.filter(isReplayableBalanceTransaction).sort(compareReplayTransactions);
   const balancesByKey = new Map<string, BalanceState>();

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { replayBalanceHistory } from "../client/src/lib/history-replay";
+import { hasReplayStartingBaseline, replayBalanceHistory } from "../client/src/lib/history-replay";
 import type { Transaction } from "../client/src/lib/types";
 
 const transactions: Transaction[] = [
@@ -118,5 +118,21 @@ assert.deepEqual(replayStartingFromEarliestAuditSnapshot[0].before, { ht: 4, fa:
 assert.deepEqual(replayStartingFromEarliestAuditSnapshot[0].after, { ht: 4, fa: 4, of: 7 });
 assert.deepEqual(replayStartingFromEarliestAuditSnapshot[1].before, { ht: 4, fa: 4, of: 7 });
 assert.deepEqual(replayStartingFromEarliestAuditSnapshot[1].after, { ht: 4, fa: 4, of: 5 });
+
+const itemWithoutAnyAuditBaseline: Transaction[] = [
+  {
+    id: "no-baseline-sales",
+    itemId: "Never Audited",
+    category: "Demo",
+    type: "sales",
+    quantityChange: 3,
+    timestamp: new Date("2025-02-01T10:00:00Z"),
+    businessDate: new Date("2025-02-01T00:00:00Z"),
+    user: { id: "demo", name: "Demo" },
+  } as Transaction,
+];
+
+assert.equal(hasReplayStartingBaseline(itemWithoutAnyAuditBaseline, "Never Audited", "Demo"), false);
+assert.equal(hasReplayStartingBaseline(missingOpeningBalanceTransactions, "Old Item", "Demo"), true);
 
 console.log("advanced history replay checks passed");

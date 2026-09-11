@@ -19,7 +19,7 @@ import {
 } from "@/lib/balance-snapshots";
 export type { BalanceSnapshotSummary } from "@/lib/balance-snapshots";
 export { buildBalanceSnapshotItems, applyBalanceSnapshotToItems } from "@/lib/balance-snapshots";
-import { replayBalanceHistory } from "@/lib/history-replay";
+import { hasReplayStartingBaseline, replayBalanceHistory } from "@/lib/history-replay";
 import type { StockItem, Transaction } from "@/lib/types";
 
 type AdvancedTransactionType =
@@ -1338,6 +1338,13 @@ export async function getAdvancedBalanceReconciliation(
 
   return context.stockItems
     .map((stockItem) => {
+      const itemKey = toItemKey(stockItem.name, stockItem.category);
+      const hasBaseline = hasReplayStartingBaseline(context.transactions, stockItem.name, stockItem.category);
+
+      if (!hasBaseline) {
+        return null;
+      }
+
       const stored = {
         ht: stockItem.heatTreatmentBalance || 0,
         fa: stockItem.factoryBalance || 0,
@@ -1347,7 +1354,7 @@ export async function getAdvancedBalanceReconciliation(
           (stockItem.factoryBalance || 0) +
           (stockItem.officeBalance || 0),
       };
-      const computedBalances = balancesByKey.get(toItemKey(stockItem.name, stockItem.category)) || {
+      const computedBalances = balancesByKey.get(itemKey) || {
         ht: 0,
         fa: 0,
         of: 0,
@@ -1372,6 +1379,7 @@ export async function getAdvancedBalanceReconciliation(
         delta,
       };
     })
+    .filter((row): row is AdvancedBalanceReconciliationRow => row !== null)
     .filter((row) => row.delta.ht !== 0 || row.delta.fa !== 0 || row.delta.of !== 0)
     .sort((a, b) => {
       const nameCompare = a.itemId.localeCompare(b.itemId, undefined, {
