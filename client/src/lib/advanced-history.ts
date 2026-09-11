@@ -28,7 +28,7 @@ type AdvancedTransactionType =
   | "office_transfer_created"
   | "sales";
 
-type ReplayTransactionType = AdvancedTransactionType | "creation" | "adjustment";
+type ReplayTransactionType = AdvancedTransactionType | "creation" | "adjustment" | "balance_baseline_accepted";
 
 type EditableGroupType = "process" | "factory_transfer" | "office_transfer" | "sales";
 
@@ -119,6 +119,7 @@ const ADVANCED_TYPES: AdvancedTransactionType[] = [
 
 const REPLAY_TYPES: ReplayTransactionType[] = [
   "creation",
+  "balance_baseline_accepted",
   "heat_treatment_created",
   "factory_transfer_created",
   "office_transfer_created",
@@ -128,11 +129,12 @@ const REPLAY_TYPES: ReplayTransactionType[] = [
 
 const TYPE_ORDER: Record<ReplayTransactionType, number> = {
   creation: 0,
-  heat_treatment_created: 1,
-  factory_transfer_created: 2,
-  office_transfer_created: 3,
-  sales: 4,
-  adjustment: 5,
+  balance_baseline_accepted: 1,
+  heat_treatment_created: 2,
+  factory_transfer_created: 3,
+  office_transfer_created: 4,
+  sales: 5,
+  adjustment: 6,
 };
 
 const normalizeItemKeyPart = (value: string) => value.trim().replace(/\s+/g, " ").toLowerCase();
@@ -612,6 +614,45 @@ export async function createAdjustmentTransaction(input: {
   }
 
   const snapshotRef = await addDoc(collection(db, "transactions"), payload);
+  return snapshotRef.id;
+}
+
+export async function acceptStoredBalanceBaseline(input: {
+  company?: string;
+  item: StockItem;
+  user: {
+    id: string;
+    name: string;
+  };
+}): Promise<string> {
+  const timestamp = Timestamp.now();
+  const heatTreatmentBalance = input.item.heatTreatmentBalance || 0;
+  const factoryBalance = input.item.factoryBalance || 0;
+  const officeBalance = input.item.officeBalance || 0;
+  const total = heatTreatmentBalance + factoryBalance + officeBalance;
+
+  const snapshotRef = await addDoc(collection(db, "transactions"), {
+    company: input.company || input.item.company || "",
+    itemId: input.item.name,
+    category: input.item.category,
+    quantityChange: 0,
+    previousBalance: total,
+    balance: total,
+    previousHTBalance: heatTreatmentBalance,
+    previousFABalance: factoryBalance,
+    previousOFBalance: officeBalance,
+    newHTBalance: heatTreatmentBalance,
+    newFABalance: factoryBalance,
+    newOFBalance: officeBalance,
+    affectedBalance: "quantity",
+    locationId: null,
+    timestamp,
+    type: "balance_baseline_accepted",
+    edited: false,
+    user: input.user,
+    notes: "Stored balance accepted as the replay baseline after physical verification.",
+  });
+
   return snapshotRef.id;
 }
 

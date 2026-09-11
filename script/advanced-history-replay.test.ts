@@ -135,4 +135,39 @@ const itemWithoutAnyAuditBaseline: Transaction[] = [
 assert.equal(hasReplayStartingBaseline(itemWithoutAnyAuditBaseline, "Never Audited", "Demo"), false);
 assert.equal(hasReplayStartingBaseline(missingOpeningBalanceTransactions, "Old Item", "Demo"), true);
 
+const acceptedStoredBalanceTransactions: Transaction[] = [
+  {
+    id: "old-history-before-acceptance",
+    itemId: "Verified Item",
+    category: "Demo",
+    type: "sales",
+    quantityChange: 4,
+    timestamp: new Date("2025-03-01T10:00:00Z"),
+    previousBalance: 20,
+    balance: 16,
+    user: { id: "demo", name: "Demo" },
+  } as Transaction,
+  {
+    id: "verified-stored-balance",
+    itemId: "Verified Item",
+    category: "Demo",
+    type: "balance_baseline_accepted",
+    quantityChange: 0,
+    timestamp: new Date("2025-03-02T10:00:00Z"),
+    previousBalance: 25,
+    balance: 25,
+    previousHTBalance: 5,
+    previousFABalance: 8,
+    previousOFBalance: 12,
+    newHTBalance: 5,
+    newFABalance: 8,
+    newOFBalance: 12,
+    user: { id: "demo", name: "Demo" },
+  } as Transaction,
+];
+
+const acceptedStoredBalanceRows = replayBalanceHistory(acceptedStoredBalanceTransactions);
+assert.deepEqual(acceptedStoredBalanceRows.at(-1)?.before, { ht: 0, fa: 0, of: 16 });
+assert.deepEqual(acceptedStoredBalanceRows.at(-1)?.after, { ht: 5, fa: 8, of: 12 });
+
 console.log("advanced history replay checks passed");

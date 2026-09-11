@@ -48,7 +48,7 @@ export interface Transaction {
   balance: number; // Balance after transaction
   locationId?: string; // Location reference
   timestamp: Date;
-  type: 'adjustment' | 'creation' | 'transfer' | 'bulk' | 'heat_treatment_created' | 'factory_transfer_created' | 'office_transfer_created' | 'sales'; // Track if it's a new item creation, quantity adjustment, transfer, bulk, process, or sales
+  type: 'adjustment' | 'creation' | 'transfer' | 'bulk' | 'balance_baseline_accepted' | 'heat_treatment_created' | 'factory_transfer_created' | 'office_transfer_created' | 'sales'; // Track if it's a new item creation, quantity adjustment, transfer, baseline acceptance, bulk, process, or sales
   bulkTransactionId?: string; // Groups related bulk transactions
   processId?: string; // Reference to process if created from a process
   transferId?: string; // Reference to transfer if created from a transfer

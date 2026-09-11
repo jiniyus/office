@@ -4,6 +4,7 @@ type BalanceState = { ht: number; fa: number; of: number };
 
 type ReplayTransactionType =
   | "creation"
+  | "balance_baseline_accepted"
   | "heat_treatment_created"
   | "factory_transfer_created"
   | "office_transfer_created"
@@ -20,6 +21,7 @@ export interface ReplayBalanceEntry {
 
 const REPLAY_TYPES: ReplayTransactionType[] = [
   "creation",
+  "balance_baseline_accepted",
   "heat_treatment_created",
   "factory_transfer_created",
   "office_transfer_created",
@@ -29,11 +31,12 @@ const REPLAY_TYPES: ReplayTransactionType[] = [
 
 const TYPE_ORDER: Record<ReplayTransactionType, number> = {
   creation: 0,
-  heat_treatment_created: 1,
-  factory_transfer_created: 2,
-  office_transfer_created: 3,
-  sales: 4,
-  adjustment: 5,
+  balance_baseline_accepted: 1,
+  heat_treatment_created: 2,
+  factory_transfer_created: 3,
+  office_transfer_created: 4,
+  sales: 5,
+  adjustment: 6,
 };
 
 const normalizeItemKeyPart = (value: string) => value.trim().replace(/\s+/g, " ").toLowerCase();
@@ -151,7 +154,7 @@ export const replayBalanceHistory = (transactions: Transaction[]): ReplayBalance
     const before = { ...current };
     let data: Record<string, any>;
 
-    if (tx.type === "creation" || tx.type === "adjustment") {
+    if (tx.type === "creation" || tx.type === "adjustment" || tx.type === "balance_baseline_accepted") {
       const next = {
         ht: tx.newHTBalance || 0,
         fa: tx.newFABalance || 0,

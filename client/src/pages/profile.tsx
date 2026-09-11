@@ -12,6 +12,7 @@ import {
   getBalanceSnapshots,
   getAdvancedBalanceReconciliation,
   getAdvancedTransactionAudit,
+  acceptStoredBalanceBaseline,
   recalculateAdvancedState,
   restoreBalanceSnapshot,
   type AdvancedBalanceReconciliationRow,
@@ -20,7 +21,7 @@ import {
 } from "@/lib/advanced-history";
 import { useEffect, useMemo, useState } from "react";
 import { format } from "date-fns";
-import { ChevronDown, Wrench, Search, FileText, RotateCcw } from "lucide-react";
+import { ChevronDown, Wrench, Search, FileText, RotateCcw, CheckCircle2 } from "lucide-react";
 
 type AuditSortMode = "businessDate" | "actualTime";
 
@@ -220,6 +221,8 @@ export default function Profile() {
   const [isLoadingAudit, setIsLoadingAudit] = useState(false);
   const [isLoadingSnapshots, setIsLoadingSnapshots] = useState(false);
   const [isRestoringSnapshot, setIsRestoringSnapshot] = useState(false);
+  const [showBalanceAcceptanceActions, setShowBalanceAcceptanceActions] = useState(false);
+  const [acceptingBalanceItemId, setAcceptingBalanceItemId] = useState<string | null>(null);
 
   const sortedItems = useMemo(
     () =>
@@ -344,6 +347,47 @@ export default function Profile() {
       });
     } finally {
       setIsRecalculating(false);
+    }
+  };
+
+  const handleAcceptStoredBalance = async (row: AdvancedBalanceReconciliationRow) => {
+    if (!hasReviewedReconciliation) return;
+
+    const item = items.find((entry) => entry.id === row.stockItemId);
+    if (!item) {
+      toast({
+        variant: "destructive",
+        title: "Item not found",
+        description: "Refresh reconciliation before accepting this balance.",
+      });
+      return;
+    }
+
+    try {
+      setAcceptingBalanceItemId(row.stockItemId);
+      await acceptStoredBalanceBaseline({
+        company: user?.company,
+        item,
+        user: {
+          id: user?.uid || "",
+          name: user?.displayName || "Unknown",
+        },
+      });
+      const rows = await getAdvancedBalanceReconciliation(user?.company);
+      setReconciliationRows(rows);
+      toast({
+        title: "Stored balance accepted",
+        description: `${row.itemId} is now anchored to its physically verified balances.`,
+      });
+    } catch (error) {
+      console.error("Error accepting stored balance:", error);
+      toast({
+        variant: "destructive",
+        title: "Balance acceptance failed",
+        description: "Could not record the verified stored balance.",
+      });
+    } finally {
+      setAcceptingBalanceItemId(null);
     }
   };
 
@@ -553,7 +597,16 @@ export default function Profile() {
               </div>
 
               {hasReviewedReconciliation && (
-                <div className="overflow-x-auto rounded-md border border-slate-200">
+                <div className="space-y-3">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setShowBalanceAcceptanceActions((current) => !current)}
+                  >
+                    <CheckCircle2 className="mr-2 h-4 w-4" />
+                    {showBalanceAcceptanceActions ? "Hide Balance Actions" : "Show Balance Actions"}
+                  </Button>
+                  <div className="overflow-x-auto rounded-md border border-slate-200">
                   <table className="w-full min-w-[780px] text-sm">
                     <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
                       <tr>
@@ -561,12 +614,13 @@ export default function Profile() {
                         <th className="px-3 py-2 font-semibold">Stored</th>
                         <th className="px-3 py-2 font-semibold">Computed</th>
                         <th className="px-3 py-2 font-semibold">Delta</th>
+                        {showBalanceAcceptanceActions && <th className="px-3 py-2 font-semibold">Action</th>}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {reconciliationRows.length === 0 ? (
                         <tr className="bg-white">
-                          <td className="px-3 py-3 text-slate-600" colSpan={4}>
+                          <td className="px-3 py-3 text-slate-600" colSpan={showBalanceAcceptanceActions ? 5 : 4}>
                             No stock balance differences found.
                           </td>
                         </tr>
@@ -582,11 +636,25 @@ export default function Profile() {
                             <td className="px-3 py-2 font-semibold text-slate-900">
                               {formatBalanceTriplet(row.delta)}
                             </td>
+                            {showBalanceAcceptanceActions && (
+                              <td className="px-3 py-2">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => handleAcceptStoredBalance(row)}
+                                  disabled={acceptingBalanceItemId === row.stockItemId}
+                                >
+                                  <CheckCircle2 className="mr-2 h-4 w-4" />
+                                  {acceptingBalanceItemId === row.stockItemId ? "Saving..." : "Accept Stored"}
+                                </Button>
+                              </td>
+                            )}
                           </tr>
                         ))
                       )}
                     </tbody>
                   </table>
+                  </div>
                 </div>
               )}
 
