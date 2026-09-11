@@ -10,15 +10,19 @@ import { useStockItems } from "@/lib/firestore-hooks";
 import type { StockItem } from "@/lib/types";
 import {
   getBalanceSnapshots,
+  getAdvancedBalanceReconciliation,
   getAdvancedTransactionAudit,
   recalculateAdvancedState,
   restoreBalanceSnapshot,
+  type AdvancedBalanceReconciliationRow,
   type AdvancedTransactionAuditRow,
   type BalanceSnapshotSummary,
 } from "@/lib/advanced-history";
 import { useEffect, useMemo, useState } from "react";
 import { format } from "date-fns";
 import { ChevronDown, Wrench, Search, FileText, RotateCcw } from "lucide-react";
+
+type AuditSortMode = "businessDate" | "actualTime";
 
 const PDF_PAGE_WIDTH = 595;
 const PDF_PAGE_HEIGHT = 842;
@@ -202,10 +206,17 @@ export default function Profile() {
   const [selectedAuditItemId, setSelectedAuditItemId] = useState("");
   const [isAuditPickerOpen, setIsAuditPickerOpen] = useState(false);
   const [auditRows, setAuditRows] = useState<AdvancedTransactionAuditRow[]>([]);
+  const [auditSortMode, setAuditSortMode] = useState<AuditSortMode>("businessDate");
+  const [auditStartDate, setAuditStartDate] = useState("");
+  const [auditEndDate, setAuditEndDate] = useState("");
+  const [auditTypeFilter, setAuditTypeFilter] = useState("all");
   const [balanceSnapshots, setBalanceSnapshots] = useState<BalanceSnapshotSummary[]>([]);
+  const [reconciliationRows, setReconciliationRows] = useState<AdvancedBalanceReconciliationRow[]>([]);
+  const [hasReviewedReconciliation, setHasReviewedReconciliation] = useState(false);
   const [selectedSnapshotId, setSelectedSnapshotId] = useState("");
   const [isSnapshotPickerOpen, setIsSnapshotPickerOpen] = useState(false);
   const [isRecalculating, setIsRecalculating] = useState(false);
+  const [isReconciling, setIsReconciling] = useState(false);
   const [isLoadingAudit, setIsLoadingAudit] = useState(false);
   const [isLoadingSnapshots, setIsLoadingSnapshots] = useState(false);
   const [isRestoringSnapshot, setIsRestoringSnapshot] = useState(false);
@@ -229,6 +240,32 @@ export default function Profile() {
     ? `${format(selectedSnapshot.createdAt, "MMM dd, yyyy HH:mm:ss")} - ${selectedSnapshot.reason.replaceAll("_", " ")}`
     : "Select snapshot to restore";
 
+  const auditTypeOptions = useMemo(
+    () => Array.from(new Set(auditRows.map((row) => row.type))).sort(),
+    [auditRows]
+  );
+
+  const visibleAuditRows = useMemo(() => {
+    const getSortDate = (row: AdvancedTransactionAuditRow) =>
+      auditSortMode === "businessDate" ? row.businessDate || row.timestamp : row.timestamp;
+    const startTime = auditStartDate ? new Date(`${auditStartDate}T00:00:00`).getTime() : null;
+    const endTime = auditEndDate ? new Date(`${auditEndDate}T23:59:59.999`).getTime() : null;
+
+    return auditRows
+      .filter((row) => auditTypeFilter === "all" || row.type === auditTypeFilter)
+      .filter((row) => {
+        const sortTime = getSortDate(row).getTime();
+        if (startTime !== null && sortTime < startTime) return false;
+        if (endTime !== null && sortTime > endTime) return false;
+        return true;
+      })
+      .sort((a, b) => {
+        const dateCompare = getSortDate(a).getTime() - getSortDate(b).getTime();
+        if (dateCompare !== 0) return dateCompare;
+        return a.timestamp.getTime() - b.timestamp.getTime();
+      });
+  }, [auditEndDate, auditRows, auditSortMode, auditStartDate, auditTypeFilter]);
+
   useEffect(() => {
     setAdminPassword("");
     const clearAutofill = window.setTimeout(() => setAdminPassword(""), 100);
@@ -248,8 +285,43 @@ export default function Profile() {
     return true;
   };
 
+  const handleRunReconciliation = async () => {
+    if (!validateAdminPassword()) return;
+
+    try {
+      setIsReconciling(true);
+      const rows = await getAdvancedBalanceReconciliation(user?.company);
+      setReconciliationRows(rows);
+      setHasReviewedReconciliation(true);
+      toast({
+        title: "Reconciliation complete",
+        description:
+          rows.length === 0
+            ? "No stock balance differences were found."
+            : `Found ${rows.length} item(s) with balance differences.`,
+      });
+    } catch (error) {
+      console.error("Error reconciling stock:", error);
+      toast({
+        variant: "destructive",
+        title: "Reconciliation failed",
+        description: "Could not compare stock balances.",
+      });
+    } finally {
+      setIsReconciling(false);
+    }
+  };
+
   const handleRecalculateAll = async () => {
     if (!validateAdminPassword()) return;
+    if (!hasReviewedReconciliation) {
+      toast({
+        variant: "destructive",
+        title: "Run reconciliation first",
+        description: "Review the diff report before applying stock balance corrections.",
+      });
+      return;
+    }
 
     try {
       setIsRecalculating(true);
@@ -257,6 +329,8 @@ export default function Profile() {
         id: user?.uid || "",
         name: user?.displayName || "Unknown",
       });
+      const rows = await getAdvancedBalanceReconciliation(user?.company);
+      setReconciliationRows(rows);
       toast({
         title: "Recalculation complete",
         description: "All advanced stock balances were rebuilt from transaction history.",
@@ -393,6 +467,8 @@ export default function Profile() {
   const formatDateTime = (date?: Date) => (date ? format(date, "MMM dd, yyyy HH:mm:ss") : "-");
   const formatBalances = (balances: { ht: number; fa: number; of: number }) =>
     `HT ${balances.ht} / FA ${balances.fa} / OF ${balances.of}`;
+  const formatBalanceTriplet = (balances: { ht: number; fa: number; of: number; total: number }) =>
+    `HT ${balances.ht} / FA ${balances.fa} / OF ${balances.of} / Total ${balances.total}`;
 
   return (
     <Layout>
@@ -450,7 +526,7 @@ export default function Profile() {
               <CardDescription>Rebuild balances and inspect transaction replay order.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
-              <div className="grid gap-4 md:grid-cols-[1fr_auto] md:items-end">
+              <div className="grid gap-4 md:grid-cols-[1fr_auto_auto] md:items-end">
                 <div className="space-y-2">
                   <Label>Admin Password</Label>
                   <Input
@@ -466,11 +542,53 @@ export default function Profile() {
                     placeholder="Enter password"
                   />
                 </div>
-                <Button onClick={handleRecalculateAll} disabled={isRecalculating}>
+                <Button variant="outline" onClick={handleRunReconciliation} disabled={isReconciling}>
+                  <Search className="mr-2 h-4 w-4" />
+                  {isReconciling ? "Reconciling..." : "Run Reconciliation"}
+                </Button>
+                <Button onClick={handleRecalculateAll} disabled={isRecalculating || !hasReviewedReconciliation}>
                   <Wrench className="mr-2 h-4 w-4" />
                   {isRecalculating ? "Recalculating..." : "Recalculate All Stock"}
                 </Button>
               </div>
+
+              {hasReviewedReconciliation && (
+                <div className="overflow-x-auto rounded-md border border-slate-200">
+                  <table className="w-full min-w-[780px] text-sm">
+                    <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
+                      <tr>
+                        <th className="px-3 py-2 font-semibold">Item</th>
+                        <th className="px-3 py-2 font-semibold">Stored</th>
+                        <th className="px-3 py-2 font-semibold">Computed</th>
+                        <th className="px-3 py-2 font-semibold">Delta</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {reconciliationRows.length === 0 ? (
+                        <tr className="bg-white">
+                          <td className="px-3 py-3 text-slate-600" colSpan={4}>
+                            No stock balance differences found.
+                          </td>
+                        </tr>
+                      ) : (
+                        reconciliationRows.map((row) => (
+                          <tr key={row.stockItemId} className="bg-white">
+                            <td className="px-3 py-2">
+                              <div className="font-medium text-slate-900">{row.itemId}</div>
+                              <div className="text-xs text-slate-500">{row.category}</div>
+                            </td>
+                            <td className="px-3 py-2 text-slate-600">{formatBalanceTriplet(row.stored)}</td>
+                            <td className="px-3 py-2 text-slate-600">{formatBalanceTriplet(row.computed)}</td>
+                            <td className="px-3 py-2 font-semibold text-slate-900">
+                              {formatBalanceTriplet(row.delta)}
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
 
               <div className="grid gap-4 border-t border-slate-100 pt-6 md:grid-cols-[1fr_auto_auto] md:items-end">
                 <div className="space-y-2">
@@ -578,38 +696,93 @@ export default function Profile() {
               </div>
 
               {auditRows.length > 0 && (
-                <div className="overflow-x-auto rounded-md border border-slate-200">
-                  <table className="w-full min-w-[780px] text-sm">
-                    <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
-                      <tr>
-                        <th className="px-3 py-2 font-semibold">Order</th>
-                        <th className="px-3 py-2 font-semibold">Type</th>
-                        <th className="px-3 py-2 font-semibold">Qty</th>
-                        <th className="px-3 py-2 font-semibold">Actual Time</th>
-                        <th className="px-3 py-2 font-semibold">Business Date</th>
-                        <th className="px-3 py-2 font-semibold">Before</th>
-                        <th className="px-3 py-2 font-semibold">After</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {auditRows.map((row, index) => (
-                        <tr key={row.id} className="bg-white">
-                          <td className="px-3 py-2 text-slate-500">{index + 1}</td>
-                          <td className="px-3 py-2">
-                            <div className="font-medium text-slate-900">{row.type.replaceAll("_", " ")}</div>
-                            {row.groupId && <div className="text-xs text-slate-500">{row.groupId}</div>}
-                          </td>
-                          <td className="px-3 py-2 font-semibold">{row.quantityChange}</td>
-                          <td className="px-3 py-2 text-slate-600">{formatDateTime(row.timestamp)}</td>
-                          <td className="px-3 py-2 text-slate-600">
-                            {row.businessDate ? format(row.businessDate, "MMM dd, yyyy") : "-"}
-                          </td>
-                          <td className="px-3 py-2 text-slate-600">{formatBalances(row.before)}</td>
-                          <td className="px-3 py-2 font-medium text-slate-900">{formatBalances(row.after)}</td>
+                <div className="space-y-3">
+                  <div className="grid gap-3 md:grid-cols-4">
+                    <div className="space-y-2">
+                      <Label>Sort By</Label>
+                      <select
+                        className="h-10 w-full rounded-md border border-input bg-white px-3 text-sm shadow-sm"
+                        value={auditSortMode}
+                        onChange={(event) => setAuditSortMode(event.target.value as AuditSortMode)}
+                      >
+                        <option value="businessDate">Business Date</option>
+                        <option value="actualTime">Actual Time</option>
+                      </select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Start Date</Label>
+                      <Input
+                        type="date"
+                        value={auditStartDate}
+                        onChange={(event) => setAuditStartDate(event.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>End Date</Label>
+                      <Input
+                        type="date"
+                        value={auditEndDate}
+                        onChange={(event) => setAuditEndDate(event.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Transaction Type</Label>
+                      <select
+                        className="h-10 w-full rounded-md border border-input bg-white px-3 text-sm shadow-sm"
+                        value={auditTypeFilter}
+                        onChange={(event) => setAuditTypeFilter(event.target.value)}
+                      >
+                        <option value="all">All Types</option>
+                        {auditTypeOptions.map((type) => (
+                          <option key={type} value={type}>
+                            {type.replaceAll("_", " ")}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="overflow-x-auto rounded-md border border-slate-200">
+                    <table className="w-full min-w-[780px] text-sm">
+                      <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
+                        <tr>
+                          <th className="px-3 py-2 font-semibold">Order</th>
+                          <th className="px-3 py-2 font-semibold">Type</th>
+                          <th className="px-3 py-2 font-semibold">Qty</th>
+                          <th className="px-3 py-2 font-semibold">Actual Time</th>
+                          <th className="px-3 py-2 font-semibold">Business Date</th>
+                          <th className="px-3 py-2 font-semibold">Before</th>
+                          <th className="px-3 py-2 font-semibold">After</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {visibleAuditRows.length === 0 ? (
+                          <tr className="bg-white">
+                            <td className="px-3 py-3 text-slate-600" colSpan={7}>
+                              No audit entries match the selected filters.
+                            </td>
+                          </tr>
+                        ) : (
+                          visibleAuditRows.map((row, index) => (
+                            <tr key={row.id} className="bg-white">
+                              <td className="px-3 py-2 text-slate-500">{index + 1}</td>
+                              <td className="px-3 py-2">
+                                <div className="font-medium text-slate-900">{row.type.replaceAll("_", " ")}</div>
+                                {row.groupId && <div className="text-xs text-slate-500">{row.groupId}</div>}
+                              </td>
+                              <td className="px-3 py-2 font-semibold">{row.quantityChange}</td>
+                              <td className="px-3 py-2 text-slate-600">{formatDateTime(row.timestamp)}</td>
+                              <td className="px-3 py-2 text-slate-600">
+                                {row.businessDate ? format(row.businessDate, "MMM dd, yyyy") : "-"}
+                              </td>
+                              <td className="px-3 py-2 text-slate-600">{formatBalances(row.before)}</td>
+                              <td className="px-3 py-2 font-medium text-slate-900">{formatBalances(row.after)}</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               )}
             </CardContent>

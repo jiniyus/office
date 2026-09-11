@@ -38,4 +38,49 @@ const editedOfficeTransfer = rows[1];
 
 assert.deepEqual(editedOfficeTransfer.before, { ht: 5, fa: 7, of: 11 });
 assert.deepEqual(editedOfficeTransfer.after, { ht: 5, fa: 5, of: 13 });
+
+const outOfBusinessDateOrderTransactions: Transaction[] = [
+  {
+    id: "heat-treatment-created-later-business-day",
+    itemId: "65 LH",
+    category: "CUTTER M15",
+    type: "heat_treatment_created",
+    quantityChange: 216,
+    timestamp: new Date("2026-09-10T14:00:06+05:30"),
+    businessDate: new Date("2026-09-10T00:00:00+05:30"),
+    previousBalance: 0,
+    balance: 216,
+    user: { id: "demo", name: "Demo" },
+  } as Transaction,
+  {
+    id: "manual-adjustment-created-earlier-business-later",
+    itemId: "65 LH",
+    category: "CUTTER M15",
+    type: "adjustment",
+    quantityChange: -5,
+    timestamp: new Date("2026-09-10T14:03:07+05:30"),
+    businessDate: new Date("2026-09-08T00:00:00+05:30"),
+    previousHTBalance: 216,
+    previousFABalance: 25,
+    previousOFBalance: 254,
+    newHTBalance: 216,
+    newFABalance: 25,
+    newOFBalance: 249,
+    previousBalance: 495,
+    balance: 490,
+    user: { id: "demo", name: "Demo" },
+  } as Transaction,
+];
+
+const chronologicalRows = replayBalanceHistory(outOfBusinessDateOrderTransactions);
+const heatTreatmentReplay = chronologicalRows[0];
+const adjustmentReplay = chronologicalRows[1];
+
+assert.equal(heatTreatmentReplay.tx.id, "heat-treatment-created-later-business-day");
+assert.deepEqual(heatTreatmentReplay.before, { ht: 0, fa: 0, of: 0 });
+assert.deepEqual(heatTreatmentReplay.after, { ht: 216, fa: 0, of: 0 });
+assert.equal(adjustmentReplay.tx.id, "manual-adjustment-created-earlier-business-later");
+assert.deepEqual(adjustmentReplay.before, { ht: 216, fa: 0, of: 0 });
+assert.deepEqual(adjustmentReplay.after, { ht: 216, fa: 25, of: 249 });
+
 console.log("advanced history replay checks passed");

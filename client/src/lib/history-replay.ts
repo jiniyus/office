@@ -41,18 +41,7 @@ const normalizeItemKeyPart = (value: string) => value.trim().replace(/\s+/g, " "
 const toItemKey = (itemName: string, category: string) =>
   `${normalizeItemKeyPart(itemName)}::${normalizeItemKeyPart(category)}`;
 
-const getStartOfLocalDayTime = (date?: Date) => {
-  if (!date) return new Date(0).getTime();
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
-};
-
-const getEffectiveDayTime = (tx: Transaction) =>
-  getStartOfLocalDayTime(tx.businessDate || tx.timestamp);
-
 const compareReplayTransactions = (a: Transaction, b: Transaction) => {
-  const dayCompare = getEffectiveDayTime(a) - getEffectiveDayTime(b);
-  if (dayCompare !== 0) return dayCompare;
-
   const timeCompare = a.timestamp.getTime() - b.timestamp.getTime();
   if (timeCompare !== 0) return timeCompare;
 

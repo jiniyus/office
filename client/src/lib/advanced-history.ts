@@ -101,6 +101,15 @@ export interface AdvancedTransactionAuditRow {
   groupId?: string;
 }
 
+export interface AdvancedBalanceReconciliationRow {
+  stockItemId: string;
+  itemId: string;
+  category: string;
+  stored: { ht: number; fa: number; of: number; total: number };
+  computed: { ht: number; fa: number; of: number; total: number };
+  delta: { ht: number; fa: number; of: number; total: number };
+}
+
 const ADVANCED_TYPES: AdvancedTransactionType[] = [
   "heat_treatment_created",
   "factory_transfer_created",
@@ -142,18 +151,7 @@ const toJsDate = (value?: Date | Timestamp | null) => {
   return value instanceof Timestamp ? value.toDate() : value;
 };
 
-const getStartOfLocalDayTime = (date?: Date) => {
-  if (!date) return new Date(0).getTime();
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
-};
-
-const getEffectiveDayTime = (tx: Transaction) =>
-  getStartOfLocalDayTime(tx.businessDate || tx.timestamp);
-
 const compareAdvancedTransactions = (a: Transaction, b: Transaction) => {
-  const dateCompare = getEffectiveDayTime(a) - getEffectiveDayTime(b);
-  if (dateCompare !== 0) return dateCompare;
-
   const timeCompare = a.timestamp.getTime() - b.timestamp.getTime();
   if (timeCompare !== 0) return timeCompare;
 
@@ -1327,6 +1325,67 @@ export async function reverseAdvancedGroup(groupType: EditableGroupType, groupId
   await recalculateAdvancedStateOptimized(company, affectedItemKeys);
 }
 
+export async function getAdvancedBalanceReconciliation(
+  company?: string
+): Promise<AdvancedBalanceReconciliationRow[]> {
+  const context = await loadAdvancedContext(company);
+  const replayRows = replayBalanceHistory(context.transactions);
+  const balancesByKey = new Map<string, { ht: number; fa: number; of: number }>();
+
+  for (const replay of replayRows) {
+    balancesByKey.set(replay.itemKey, { ...replay.after });
+  }
+
+  return context.stockItems
+    .map((stockItem) => {
+      const stored = {
+        ht: stockItem.heatTreatmentBalance || 0,
+        fa: stockItem.factoryBalance || 0,
+        of: stockItem.officeBalance || 0,
+        total:
+          (stockItem.heatTreatmentBalance || 0) +
+          (stockItem.factoryBalance || 0) +
+          (stockItem.officeBalance || 0),
+      };
+      const computedBalances = balancesByKey.get(toItemKey(stockItem.name, stockItem.category)) || {
+        ht: 0,
+        fa: 0,
+        of: 0,
+      };
+      const computed = {
+        ...computedBalances,
+        total: computedBalances.ht + computedBalances.fa + computedBalances.of,
+      };
+      const delta = {
+        ht: computed.ht - stored.ht,
+        fa: computed.fa - stored.fa,
+        of: computed.of - stored.of,
+        total: computed.total - stored.total,
+      };
+
+      return {
+        stockItemId: stockItem.id,
+        itemId: stockItem.name,
+        category: stockItem.category,
+        stored,
+        computed,
+        delta,
+      };
+    })
+    .filter((row) => row.delta.ht !== 0 || row.delta.fa !== 0 || row.delta.of !== 0)
+    .sort((a, b) => {
+      const nameCompare = a.itemId.localeCompare(b.itemId, undefined, {
+        numeric: true,
+        sensitivity: "base",
+      });
+      if (nameCompare !== 0) return nameCompare;
+      return a.category.localeCompare(b.category, undefined, {
+        numeric: true,
+        sensitivity: "base",
+      });
+    });
+}
+
 // Optimized: Recalculate only affected items to improve performance
 export async function recalculateAdvancedStateOptimized(
   company?: string,
@@ -1343,7 +1402,6 @@ export async function recalculateAdvancedStateOptimized(
   const itemsToCheck = affectedItemKeys || new Set<string>();
   const shouldFullRecalc = itemsToCheck.size === 0;
 
-  const txUpdates: Array<{ id: string; data: Record<string, any> }> = [];
   const deletedTxIds: string[] = [];
   const balancesByKey = new Map<string, { ht: number; fa: number; of: number }>();
   const touchedItemKeys = new Set<string>(itemsToCheck);
@@ -1358,17 +1416,7 @@ export async function recalculateAdvancedStateOptimized(
 
     touchedItemKeys.add(itemKey);
     balancesByKey.set(itemKey, { ...after });
-
-    txUpdates.push({
-      id: tx.id,
-      data: replay.data,
-    });
   }
-
-  // Batch update transactions in parallel
-  await Promise.all(
-    txUpdates.map((update) => updateDoc(doc(db, "transactions", update.id), update.data))
-  );
 
   // Update only affected stock items
   const stockByKey = new Map(
