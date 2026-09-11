@@ -1,6 +1,6 @@
 import { rm, readFile } from "fs/promises";
 
-process.env.GOMAXPROCS ||= "2";
+process.env.GOMAXPROCS ||= "1";
 
 // server deps to bundle to reduce openat(2) syscalls
 // which helps cold start times

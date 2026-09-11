@@ -6,12 +6,13 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthProvider, ProtectedRoute } from "@/lib/auth";
 import NotFound from "@/pages/not-found";
-import Login from "@/pages/login";
-import Stock from "@/pages/stock";
-import ProcessPage from "@/pages/process";
-import LocationPage from "@/pages/location";
-import HistoryPage from "@/pages/history";
-import Profile from "@/pages/profile";
+
+const Login = withLazyPage(lazy(() => import("@/pages/login")));
+const Stock = withLazyPage(lazy(() => import("@/pages/stock")));
+const ProcessPage = withLazyPage(lazy(() => import("@/pages/process")));
+const LocationPage = withLazyPage(lazy(() => import("@/pages/location")));
+const HistoryPage = withLazyPage(lazy(() => import("@/pages/history")));
+const Profile = withLazyPage(lazy(() => import("@/pages/profile")));
 
 function PageLoader() {
   return (

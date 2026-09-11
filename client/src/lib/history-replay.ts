@@ -82,6 +82,37 @@ const isReplayableBalanceTransaction = (tx: Transaction) => {
   return false;
 };
 
+const getStartingBalanceFromEarliestAuditEntry = (txs: Transaction[], itemKey: string): BalanceState => {
+  const itemTxs = txs
+    .filter((tx) => toItemKey(tx.itemId, tx.category) === itemKey)
+    .sort(compareReplayTransactions);
+
+  const earliestTx = itemTxs[0];
+  if (!earliestTx) return { ht: 0, fa: 0, of: 0 };
+
+  const previousHt = earliestTx.previousHTBalance ?? 0;
+  const previousFa = earliestTx.previousFABalance ?? 0;
+  const previousOf = earliestTx.previousOFBalance ?? 0;
+
+  if (
+    earliestTx.previousHTBalance !== undefined ||
+    earliestTx.previousFABalance !== undefined ||
+    earliestTx.previousOFBalance !== undefined
+  ) {
+    return { ht: previousHt, fa: previousFa, of: previousOf };
+  }
+
+  if (earliestTx.previousBalance !== undefined) {
+    return {
+      ht: 0,
+      fa: 0,
+      of: earliestTx.previousBalance,
+    };
+  }
+
+  return { ht: 0, fa: 0, of: 0 };
+};
+
 export const replayBalanceHistory = (transactions: Transaction[]): ReplayBalanceEntry[] => {
   const replayTxs = transactions.filter(isReplayableBalanceTransaction).sort(compareReplayTransactions);
   const balancesByKey = new Map<string, BalanceState>();
@@ -89,7 +120,7 @@ export const replayBalanceHistory = (transactions: Transaction[]): ReplayBalance
 
   for (const tx of replayTxs) {
     const itemKey = toItemKey(tx.itemId, tx.category);
-    const current = balancesByKey.get(itemKey) || { ht: 0, fa: 0, of: 0 };
+    const current = balancesByKey.get(itemKey) || getStartingBalanceFromEarliestAuditEntry(replayTxs, itemKey);
     const before = { ...current };
     let data: Record<string, any>;
 

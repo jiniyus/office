@@ -83,4 +83,40 @@ assert.equal(adjustmentReplay.tx.id, "manual-adjustment-created-earlier-business
 assert.deepEqual(adjustmentReplay.before, { ht: 216, fa: 0, of: 0 });
 assert.deepEqual(adjustmentReplay.after, { ht: 216, fa: 25, of: 249 });
 
+const missingOpeningBalanceTransactions: Transaction[] = [
+  {
+    id: "first-transaction",
+    itemId: "Old Item",
+    category: "Demo",
+    type: "office_transfer_created",
+    quantityChange: 5,
+    timestamp: new Date("2025-01-04T10:00:00Z"),
+    businessDate: new Date("2025-01-04T00:00:00Z"),
+    previousHTBalance: 4,
+    previousFABalance: 9,
+    previousOFBalance: 2,
+    newHTBalance: 4,
+    newFABalance: 4,
+    newOFBalance: 7,
+    user: { id: "demo", name: "Demo" },
+  } as Transaction,
+  {
+    id: "second-transaction",
+    itemId: "Old Item",
+    category: "Demo",
+    type: "sales",
+    quantityChange: 2,
+    timestamp: new Date("2025-01-05T10:00:00Z"),
+    businessDate: new Date("2025-01-05T00:00:00Z"),
+    user: { id: "demo", name: "Demo" },
+  } as Transaction,
+];
+
+const replayStartingFromEarliestAuditSnapshot = replayBalanceHistory(missingOpeningBalanceTransactions);
+assert.equal(replayStartingFromEarliestAuditSnapshot.length, 2);
+assert.deepEqual(replayStartingFromEarliestAuditSnapshot[0].before, { ht: 4, fa: 9, of: 2 });
+assert.deepEqual(replayStartingFromEarliestAuditSnapshot[0].after, { ht: 4, fa: 4, of: 7 });
+assert.deepEqual(replayStartingFromEarliestAuditSnapshot[1].before, { ht: 4, fa: 4, of: 7 });
+assert.deepEqual(replayStartingFromEarliestAuditSnapshot[1].after, { ht: 4, fa: 4, of: 5 });
+
 console.log("advanced history replay checks passed");

@@ -8,7 +8,7 @@ import { metaImagesPlugin } from "./vite-plugin-meta-images";
 export default defineConfig({
   plugins: [
     react(),
-    runtimeErrorOverlay(),
+    ...(process.env.NODE_ENV !== "production" ? [runtimeErrorOverlay()] : []),
     tailwindcss(),
     metaImagesPlugin(),
     ...(process.env.NODE_ENV !== "production" &&
@@ -40,8 +40,23 @@ export default defineConfig({
   build: {
     outDir: path.resolve(import.meta.dirname, "dist/public"),
     emptyOutDir: true,
+    target: "es2022",
     minify: false,
     cssMinify: false,
+    reportCompressedSize: false,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return undefined;
+          if (id.includes("firebase")) return "vendor-firebase";
+          if (id.includes("@radix-ui")) return "vendor-radix";
+          if (id.includes("react") || id.includes("wouter")) return "vendor-react";
+          if (id.includes("lucide-react")) return "vendor-icons";
+          if (id.includes("date-fns")) return "vendor-date";
+          return "vendor";
+        },
+      },
+    },
   },
   server: {
     host: "0.0.0.0",
