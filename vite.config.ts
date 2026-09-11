@@ -50,7 +50,6 @@ export default defineConfig({
           if (!id.includes("node_modules")) return undefined;
           if (id.includes("firebase")) return "vendor-firebase";
           if (id.includes("@radix-ui")) return "vendor-radix";
-          if (id.includes("react") || id.includes("wouter")) return "vendor-react";
           if (id.includes("lucide-react")) return "vendor-icons";
           if (id.includes("date-fns")) return "vendor-date";
           return "vendor";
